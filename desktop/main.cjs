@@ -8,13 +8,13 @@ const { createPreferencesStore } = require('./preferences-store.cjs');
 const { createTransferService, transferError } = require('./file-operations.cjs');
 const { createExplorerActions, createMutationCoordinator, actionError } = require('./explorer-actions.cjs');
 
-const applicationId = 'com.pane.prototype';
+const applicationId = 'com.quadpane.app';
 const indexPath = path.join(__dirname, '..', 'index.html');
 const indexURL = pathToFileURL(indexPath).href;
 const portableDirectory = process.env.PORTABLE_EXECUTABLE_DIR;
 const dataDirectory = path.join(
   portableDirectory || (app.isPackaged ? path.dirname(process.execPath) : path.join(__dirname, '..')),
-  app.isPackaged ? 'pane-data' : '.pane-dev-data',
+  app.isPackaged ? 'quadpane-data' : '.quadpane-dev-data',
 );
 
 function ensureWritableDirectory(directory) {
@@ -39,8 +39,8 @@ try {
     app.setPath(name, directory);
   }
 } catch (error) {
-  dialog.showErrorBox('pane 설정 폴더를 만들 수 없습니다',
-    `실행 파일 옆의 설정 폴더에 쓸 수 없습니다.\n\n${dataDirectory}\n\n쓰기 가능한 폴더로 pane 실행 파일을 옮긴 뒤 다시 실행해 주세요.\n\n${error.message}`);
+  dialog.showErrorBox('Quadpane 설정 폴더를 만들 수 없습니다',
+    `실행 파일 옆의 설정 폴더에 쓸 수 없습니다.\n\n${dataDirectory}\n\n쓰기 가능한 폴더로 Quadpane 실행 파일을 옮긴 뒤 다시 실행해 주세요.\n\n${error.message}`);
   app.exit(1);
 }
 
@@ -92,7 +92,7 @@ function registerFileAccess() {
   handle('pane:begin-native-drag', async request => {
     const files = await explorerActions.prepareNativeDrag(request);
     const icon = await app.getFileIcon(files[0], { size: 'normal' })
-      .catch(() => nativeImage.createFromPath(path.join(__dirname, 'pane.ico')));
+      .catch(() => nativeImage.createFromPath(path.join(__dirname, 'quadpane.ico')));
     if (!mainWindow || mainWindow.isDestroyed()) throw Object.assign(new Error('Window closed'), { code: 'ACTION_FAILED' });
     mainWindow.webContents.startDrag({ files, icon });
     return null;
@@ -106,9 +106,9 @@ function createWindow() {
     minWidth: 760,
     minHeight: 540,
     show: false,
-    title: 'pane — 파일 탐색기',
+    title: 'Quadpane — 파일 탐색기',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#11151c' : '#f4f6f8',
-    icon: path.join(__dirname, 'pane.ico'),
+    icon: path.join(__dirname, 'quadpane.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
@@ -135,7 +135,7 @@ function createWindow() {
     const pending = mutations.pending;
     if (!pending) return;
     event.preventDefault();
-    window.setTitle('pane — 파일 작업을 마친 뒤 종료합니다');
+    window.setTitle('Quadpane — 파일 작업을 마친 뒤 종료합니다');
     if (!quitAfterTransfer) {
       quitAfterTransfer = true;
       pending.finally(() => { quitAfterTransfer = false; app.quit(); }).catch(() => {});
@@ -143,7 +143,7 @@ function createWindow() {
   });
   window.on('closed', () => { mainWindow = undefined; });
   window.loadFile(indexPath).catch(error => {
-    dialog.showErrorBox('pane 화면을 열 수 없습니다', error.message);
+    dialog.showErrorBox('Quadpane 화면을 열 수 없습니다', error.message);
     app.quit();
   });
 }

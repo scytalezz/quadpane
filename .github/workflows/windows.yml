@@ -41,7 +41,7 @@ jobs:
       - name: Keep build artifacts
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: pane-windows-x64
+          name: quadpane-windows-x64
           path: |
             dist-portable/*.exe
             dist-portable/SHA256SUMS.txt

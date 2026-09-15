@@ -48,4 +48,4 @@ icoHeader.writeUInt16LE(1, 10);
 icoHeader.writeUInt16LE(32, 12);
 icoHeader.writeUInt32LE(png.length, 14);
 icoHeader.writeUInt32LE(22, 18);
-fs.writeFileSync(path.join(__dirname, 'pane.ico'), Buffer.concat([icoHeader, png]));
+fs.writeFileSync(path.join(__dirname, 'quadpane.ico'), Buffer.concat([icoHeader, png]));

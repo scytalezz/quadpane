@@ -7,8 +7,8 @@ coverage/
 .eslintcache
 
 # Local preferences, file paths and developer state
-.pane-dev-data/
-pane-data/
+.quadpane-dev-data/
+quadpane-data/
 .codex/
 .agents/
 .omc/

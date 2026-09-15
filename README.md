@@ -1,17 +1,17 @@
-# pane
+# Quadpane
 
 여러 폴더를 한 화면에 나란히 열고, 패널 사이에서 파일을 복사·이동하는 Windows 멀티패널 파일 탐색기입니다. [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir)의 멀티패널 개념을 현대적인 UI와 안전한 파일 작업으로 개선하는 것을 목표로 합니다.
 
 - 현재 버전: `0.4.0` (Windows x64 포터블)
 - 설치·관리자 권한·별도 Node.js 불필요 — 실행 파일 하나로 동작
 
-> **English** — *pane* is a multi-pane file explorer for Windows, inspired by Q-Dir. It opens up to four folder panes side by side with copy/move between panes, favorites, two workspaces, drag & drop with Windows Explorer, and full session restore. Ships as a single portable x64 executable built on Electron. Safe by design: it never overwrites or merges existing items, and delete only moves files to the Recycle Bin. Detailed docs below are in Korean.
+> **English** — *Quadpane* is a multi-pane file explorer for Windows, inspired by Q-Dir. It opens up to four folder panes side by side with copy/move between panes, favorites, two workspaces, drag & drop with Windows Explorer, and full session restore. Ships as a single portable x64 executable built on Electron. Safe by design: it never overwrites or merges existing items, and delete only moves files to the Recycle Bin. Detailed docs below are in Korean.
 
 ## 화면
 
 | 라이트 | 다크 |
 | --- | --- |
-| ![pane 라이트 테마](docs/pane-desktop.png) | ![pane 다크 테마](docs/pane-dark-desktop.png) |
+| ![Quadpane 라이트 테마](docs/quadpane-desktop.png) | ![Quadpane 다크 테마](docs/quadpane-dark-desktop.png) |
 
 ## 주요 기능
 
@@ -25,7 +25,7 @@
 
 ## 포터블 실행
 
-`npm run build:portable`로 만든 `dist-portable/pane-<버전>-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 열린 폴더·작업 공간·즐겨찾기·테마는 실행 파일 옆 `pane-data/`에 저장되며, EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
+`npm run build:portable`로 만든 `dist-portable/quadpane-<버전>-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 열린 폴더·작업 공간·즐겨찾기·테마는 실행 파일 옆 `quadpane-data/`에 저장되며, EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
 
 ## 단축키
 

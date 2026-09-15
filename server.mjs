@@ -47,9 +47,9 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.on('error', (error) => {
-  console.error(`Cannot start pane: ${error.message}`);
+  console.error(`Cannot start Quadpane: ${error.message}`);
   process.exitCode = 1;
 });
 server.listen(port, '127.0.0.1', () => {
-  console.log(`pane prototype: http://127.0.0.1:${port}`);
+  console.log(`Quadpane prototype: http://127.0.0.1:${port}`);
 });

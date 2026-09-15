@@ -7,18 +7,18 @@ const dependencies = process.argv[2] ? createRequire(path.join(path.resolve(proc
 const { _electron } = dependencies('playwright');
 const mouseMode=process.argv.includes('--mouse-drag');
 const project = path.resolve(__dirname, '..', '..');
-const executable = path.join(project, 'dist-portable', 'win-unpacked', 'pane.exe');
+const executable = path.join(project, 'dist-portable', 'win-unpacked', 'Quadpane.exe');
 const root = path.join(project, '.checks', 'explorer', `run-${Date.now()}`);
 const source = path.join(root, '원본');
 const target = path.join(root, '대상');
 const nested = path.join(target, '안쪽 폴더');
 const external = path.join(root, '외부 드롭');
 const profile = path.join(root, 'profile');
-for (const dir of [source, target, nested, external, path.join(profile, 'pane-data')]) fs.mkdirSync(dir, { recursive: true });
+for (const dir of [source, target, nested, external, path.join(profile, 'quadpane-data')]) fs.mkdirSync(dir, { recursive: true });
 for (const [name, content] of [['alpha.txt','alpha bytes'], ['beta.txt','beta bytes'], ['drag-move.txt','move bytes'], ['drag-copy.txt','copy bytes'], ['folder-drop.txt','folder bytes'], ['rename-me.txt','rename bytes'], ['trash-me.txt','only this created fixture is trashed']]) fs.writeFileSync(path.join(source, name), content);
 fs.writeFileSync(path.join(external, 'incoming.txt'), 'external file object');
 const paneState = location => ({ path: location, sort: 'name', direction: 1 });
-fs.writeFileSync(path.join(profile, 'pane-data', 'session.json'), JSON.stringify({ version: 1, workspaceId: 'design', workspaces: {
+fs.writeFileSync(path.join(profile, 'quadpane-data', 'session.json'), JSON.stringify({ version: 1, workspaceId: 'design', workspaces: {
   design: { layout: 4, active: 0, panes: [source, target, source, external].map(paneState) },
   documents: { layout: 2, active: 0, panes: [target, source, external, nested].map(paneState) },
 } }));

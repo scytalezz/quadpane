@@ -822,7 +822,7 @@ function showUnavailable(message,retry = false) {
   $('#connection-status').textContent = hasNativeBridge?'PC 연결 실패':'포터블 앱 전용';
   $('#storage-status').textContent = hasNativeBridge?'PC 연결을 확인해 주세요':'포터블 앱에서 위치 자동 저장';
   $('#panels').dataset.layout = '1';
-  $('#panels').innerHTML = `<section class="native-required">${icon('desktop')}<h2>${escapeHtml(message)}</h2><p>${hasNativeBridge?'PC 연결을 다시 확인해 주세요.':'다운로드한 pane 포터블 실행파일을 열면 이 PC의 드라이브와 폴더를 탐색할 수 있어요.'}</p>${retry?'<button class="primary-button" id="bootstrap-retry">다시 연결</button>':''}</section>`;
+  $('#panels').innerHTML = `<section class="native-required">${icon('desktop')}<h2>${escapeHtml(message)}</h2><p>${hasNativeBridge?'PC 연결을 다시 확인해 주세요.':'다운로드한 Quadpane 포터블 실행파일을 열면 이 PC의 드라이브와 폴더를 탐색할 수 있어요.'}</p>${retry?'<button class="primary-button" id="bootstrap-retry">다시 연결</button>':''}</section>`;
   $('#global-search').disabled = true;
   $('#refresh-button').disabled = true;
   $('#file-info-button').disabled = true;

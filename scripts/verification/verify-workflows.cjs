@@ -6,7 +6,7 @@ const { createRequire } = require('node:module');
 const dependencies = process.argv[2] ? createRequire(path.join(path.resolve(process.argv[2]), 'package.json')) : require;
 const { _electron } = dependencies('playwright');
 const project = path.resolve(__dirname, '..', '..');
-const executable = path.join(project, 'dist-portable', 'win-unpacked', 'pane.exe');
+const executable = path.join(project, 'dist-portable', 'win-unpacked', 'Quadpane.exe');
 const root = path.join(project, '.checks', 'workflows', `run-${Date.now()}`);
 const source = path.join(root, '원본');
 const target = path.join(root, '복사 대상');
@@ -14,7 +14,7 @@ const other = path.join(root, '다른 작업 공간');
 const empty = path.join(root, '빈 폴더');
 const folder = path.join(source, '프로젝트 & 자료');
 const profile = path.join(root, 'app');
-for (const directory of [source, target, other, empty, path.join(folder, '하위'), path.join(profile, 'pane-data')]) fs.mkdirSync(directory, { recursive: true });
+for (const directory of [source, target, other, empty, path.join(folder, '하위'), path.join(profile, 'quadpane-data')]) fs.mkdirSync(directory, { recursive: true });
 const fileName = "client's & report.txt";
 const moveName = '옮길 파일.md';
 fs.writeFileSync(path.join(source, fileName), 'original source bytes');
@@ -25,7 +25,7 @@ const session = { version: 1, workspaceId: 'design', workspaces: {
   design: { layout: 4, active: 0, panes: [source, target, empty, source].map(paneState) },
   documents: { layout: 2, active: 0, panes: [other, empty, source, target].map(paneState) },
 } };
-fs.writeFileSync(path.join(profile, 'pane-data', 'session.json'), JSON.stringify(session));
+fs.writeFileSync(path.join(profile, 'quadpane-data', 'session.json'), JSON.stringify(session));
 const checks = [];
 const errors = [];
 let application;

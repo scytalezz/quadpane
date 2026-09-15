@@ -6,7 +6,7 @@ const { createRequire } = require('node:module');
 const dependencies = process.argv[2] ? createRequire(path.join(path.resolve(process.argv[2]), 'package.json')) : require;
 const { _electron } = dependencies('playwright');
 const project = path.resolve(__dirname, '..', '..');
-const executable = path.join(project, 'dist-portable', 'win-unpacked', 'pane.exe');
+const executable = path.join(project, 'dist-portable', 'win-unpacked', 'Quadpane.exe');
 const root = path.join(project, '.checks', 'real-files', `run-${Date.now()}`);
 const fixture = path.join(root, 'files');
 const alpha = path.join(fixture, '한글 Alpha');
@@ -15,7 +15,7 @@ const empty = path.join(fixture, '빈 폴더');
 const child = path.join(alpha, '하위 폴더');
 const missing = path.join(fixture, '존재하지 않는 폴더');
 const profile = path.join(root, 'application');
-for (const directory of [alpha, beta, empty, child, path.join(profile, 'pane-data')]) fs.mkdirSync(directory, { recursive: true });
+for (const directory of [alpha, beta, empty, child, path.join(profile, 'quadpane-data')]) fs.mkdirSync(directory, { recursive: true });
 const firstFile = path.join(alpha, "client's & report.txt");
 fs.writeFileSync(firstFile, Buffer.alloc(1234, 65));
 fs.utimesSync(firstFile, new Date('2024-05-06T12:34:56Z'), new Date('2024-05-06T12:34:56Z'));
@@ -34,7 +34,7 @@ const state = {
     documents: { layout: 2, active: 0, panes: [beta, alpha, empty, child].map(paneState) },
   },
 };
-const sessionFile = path.join(profile, 'pane-data', 'session.json');
+const sessionFile = path.join(profile, 'quadpane-data', 'session.json');
 fs.writeFileSync(sessionFile, JSON.stringify(state));
 const passed = [];
 let application;

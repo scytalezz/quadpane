@@ -12,7 +12,7 @@ const requireDependencies = process.argv[2]
   : require;
 const { chromium } = requireDependencies('playwright');
 const version = require('../../package.json').version;
-const sourceExecutable = path.resolve(process.argv[3] || path.join(project, 'dist-portable', `pane-${version}-portable-x64.exe`));
+const sourceExecutable = path.resolve(process.argv[3] || path.join(project, 'dist-portable', `quadpane-${version}-portable-x64.exe`));
 assert.ok(fs.existsSync(sourceExecutable), `Portable EXE missing: ${sourceExecutable}`);
 const runRoot = path.join(project, '.checks', 'portable-launch', `run-${Date.now()}`);
 const originalRoot = path.join(runRoot, 'original');
@@ -142,7 +142,7 @@ async function launchAndCheck(executable, expectedTheme) {
   await page.close();
   const exitCode = await waitForExit(state);
   await browser.close().catch(() => {});
-  const dataPath = path.join(path.dirname(executable), 'pane-data');
+  const dataPath = path.join(path.dirname(executable), 'quadpane-data');
   for (const directory of ['profile', 'session', 'logs', 'crashes']) assert.ok(fs.statSync(path.join(dataPath, directory)).isDirectory(), `Missing portable ${directory} directory`);
   assert.ok(fs.existsSync(path.join(dataPath, 'session', 'Local Storage')), 'Persistent browser storage missing beside portable EXE');
   const saved = JSON.parse(fs.readFileSync(path.join(dataPath, 'session.json'), 'utf8'));
@@ -162,7 +162,7 @@ async function launchAndCheck(executable, expectedTheme) {
   fs.mkdirSync(movedRoot);
   const movedExecutable = path.join(movedRoot, path.basename(sourceExecutable));
   fs.copyFileSync(originalExecutable, movedExecutable);
-  fs.cpSync(path.join(originalRoot, 'pane-data'), path.join(movedRoot, 'pane-data'), { recursive: true });
+  fs.cpSync(path.join(originalRoot, 'quadpane-data'), path.join(movedRoot, 'quadpane-data'), { recursive: true });
   await launchAndCheck(movedExecutable, theme);
   const report = { passed: true, sourceExecutable, sha256, runRoot, observations };
   fs.writeFileSync(path.join(runRoot, 'result.json'), JSON.stringify(report, null, 2));

@@ -1,8 +1,8 @@
 {
-  "name": "pane",
+  "name": "quadpane",
   "version": "0.4.0",
   "private": true,
-  "description": "A multi-pane file explorer for Windows, inspired by Q-Dir.",
+  "description": "Quadpane — a multi-pane file explorer for Windows, inspired by Q-Dir.",
   "license": "MIT",
   "type": "module",
   "main": "desktop/main.cjs",
@@ -21,8 +21,8 @@
     "build:portable": "node desktop/create-icon.cjs && electron-builder --win portable --x64"
   },
   "build": {
-    "appId": "com.pane.prototype",
-    "productName": "pane",
+    "appId": "com.quadpane.app",
+    "productName": "Quadpane",
     "directories": {
       "output": "dist-portable"
     },
@@ -38,7 +38,7 @@
       "desktop/preferences-store.cjs",
       "desktop/file-operations.cjs",
       "desktop/explorer-actions.cjs",
-      "desktop/pane.ico",
+      "desktop/quadpane.ico",
       "package.json"
     ],
     "asar": true,
@@ -51,10 +51,10 @@
           ]
         }
       ],
-      "icon": "desktop/pane.ico"
+      "icon": "desktop/quadpane.ico"
     },
     "portable": {
-      "artifactName": "pane-${version}-portable-${arch}.${ext}",
+      "artifactName": "quadpane-${version}-portable-${arch}.${ext}",
       "requestExecutionLevel": "user"
     }
   }

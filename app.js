@@ -78,8 +78,8 @@ function sizeText(value) {
 const bridge = window.pane;
 const hasNativeBridge = Boolean(bridge && ['bootstrap','listDirectory','saveSession'].every((method) => typeof bridge[method] === 'function'));
 const workspaceDefinitions = {
-  design:{name:'내 작업 공간',description:'자주 쓰는 폴더를 나란히, 마지막 위치 그대로.',icon:'grid'},
-  documents:{name:'문서 작업',description:'문서와 자료를 함께 보고, 열린 위치를 기억해요.',icon:'documents'}
+  design:{name:'메인 작업 공간',description:'자주 쓰는 폴더를 나란히, 마지막 위치 그대로.',icon:'grid'},
+  documents:{name:'보조 작업 공간',description:'문서와 자료를 함께 보고, 열린 위치를 기억해요.',icon:'documents'}
 };
 let workspaces = {};
 let workspaceId = 'design';

@@ -13,8 +13,8 @@
 <body>
   <div class="app-shell">
     <header class="appbar">
-      <a class="brand" href="./index.html" aria-label="Quadpane 홈"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Quadpane<span class="brand-caption">파일 탐색기</span></a>
-      <div class="app-location"><span>파일 탐색기</span><span class="location-divider">/</span><strong id="app-workspace">내 작업 공간</strong></div>
+      <a class="brand" href="./index.html" aria-label="Quadpane 홈"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>Quadpane</a>
+      <div class="app-location"><span>파일 탐색기</span><span class="location-divider">/</span><strong id="app-workspace">메인 작업 공간</strong></div>
       <label class="search-box"><span id="search-icon"></span><input id="global-search" type="search" placeholder="열린 폴더에서 검색" aria-label="열린 폴더에서 검색" autocomplete="off"><kbd>Ctrl K</kbd></label>
       <button class="icon-button app-theme" id="theme-toggle" aria-label="다크 모드" aria-pressed="false" title="다크 모드로 전환"></button>
       <button class="icon-button app-help" id="help-button" aria-label="사용 안내" title="사용 안내"></button>
@@ -32,7 +32,7 @@
     </aside>
 
     <main class="main-content">
-      <header class="workspace-header"><div><div class="workspace-eyebrow">작업 공간</div><h1 id="workspace-title">내 작업 공간</h1><p id="workspace-description">자주 쓰는 폴더를 나란히, 마지막 위치 그대로.</p></div><div class="layout-options"><span class="layout-label">화면 분할</span><div class="segmented-control" role="group" aria-label="화면 분할"><button data-layout="1" aria-label="1분할" title="1분할" aria-pressed="false" disabled></button><button data-layout="2" aria-label="2분할" title="2분할" aria-pressed="false" disabled></button><button data-layout="4" aria-label="4분할" title="4분할" aria-pressed="true" disabled></button></div></div></header>
+      <header class="workspace-header"><div><div class="workspace-eyebrow">작업 공간</div><h1 id="workspace-title">메인 작업 공간</h1><p id="workspace-description">자주 쓰는 폴더를 나란히, 마지막 위치 그대로.</p></div><div class="layout-options"><span class="layout-label">화면 분할</span><div class="segmented-control" role="group" aria-label="화면 분할"><button data-layout="1" aria-label="1분할" title="1분할" aria-pressed="false" disabled></button><button data-layout="2" aria-label="2분할" title="2분할" aria-pressed="false" disabled></button><button data-layout="4" aria-label="4분할" title="4분할" aria-pressed="true" disabled></button></div></div></header>
       <div class="toolbar"><div class="toolbar-actions"><button class="toolbar-button refresh-button" id="refresh-button" disabled><span id="refresh-icon"></span>새로고침</button><span class="toolbar-divider"></span><button class="toolbar-button" id="copy-button" title="선택한 항목 복사 (Ctrl + C)" disabled><span id="copy-icon"></span>복사</button><button class="toolbar-button" id="cut-button" title="선택한 항목 잘라내기 (Ctrl + X)" disabled><span id="cut-icon"></span>잘라내기</button><button class="toolbar-button" id="paste-button" title="현재 폴더에 붙여넣기 (Ctrl + V)" disabled><span id="paste-icon"></span>붙여넣기</button><button class="toolbar-button" id="transfer-button" title="다른 패널이나 작업 공간으로 복사 또는 이동" disabled><span id="transfer-icon"></span>다른 창으로</button><span class="toolbar-divider"></span><button class="toolbar-button" id="file-info-button" disabled><span id="file-info-icon"></span>파일 정보</button></div><div class="toolbar-context" id="toolbar-context"></div></div>
       <div class="activity-bar" id="activity-strip"><p class="clipboard-status" id="clipboard-status" role="status"></p><p class="session-message" id="session-message" role="status" hidden></p><button type="button" class="activity-results-button" id="operation-results-button" aria-haspopup="dialog" aria-controls="transfer-result" hidden>작업 결과</button></div>
       <div class="panels" id="panels" data-layout="4"></div>

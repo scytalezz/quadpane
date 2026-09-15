@@ -12,6 +12,7 @@ quadpane-data/
 .codex/
 .agents/
 .omc/
+.claude/
 .vscode/
 .idea/
 *.local

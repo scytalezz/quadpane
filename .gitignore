@@ -1,0 +1,34 @@
+# Dependencies, build output and verification artifacts
+node_modules/
+/dist-portable/
+/.cache/
+/.checks/
+coverage/
+.eslintcache
+
+# Local preferences, file paths and developer state
+.pane-dev-data/
+pane-data/
+.codex/
+.agents/
+.omc/
+.vscode/
+.idea/
+*.local
+
+# Credentials and signing material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+.npmrc
+
+# Logs and OS files
+*.log
+*.tmp
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,50 @@
+name: Windows checks and portable build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-and-build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run check
+      - name: Windows filesystem tests
+        run: npm test
+      - name: Build portable executable
+        run: npm run build:portable
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Create checksums
+        run: |
+          Get-ChildItem -LiteralPath dist-portable -Filter '*.exe' | ForEach-Object {
+            $artifactHash = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$artifactHash  $($_.Name)"
+          } | Set-Content -LiteralPath dist-portable/SHA256SUMS.txt -Encoding utf8NoBOM
+      - name: Keep build artifacts
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: pane-windows-x64
+          path: |
+            dist-portable/*.exe
+            dist-portable/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

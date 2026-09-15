@@ -1,0 +1,61 @@
+{
+  "name": "pane",
+  "version": "0.4.0",
+  "private": true,
+  "description": "A multi-pane file explorer for Windows, inspired by Q-Dir.",
+  "license": "MIT",
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "electron": "44.3.0",
+    "electron-builder": "26.16.1"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node scripts/check.cjs",
+    "test": "node --test desktop/native-files.test.cjs desktop/preferences-store.test.cjs desktop/file-operations.test.cjs desktop/explorer-actions.test.cjs",
+    "desktop": "electron .",
+    "build:portable": "node desktop/create-icon.cjs && electron-builder --win portable --x64"
+  },
+  "build": {
+    "appId": "com.pane.prototype",
+    "productName": "pane",
+    "directories": {
+      "output": "dist-portable"
+    },
+    "files": [
+      "index.html",
+      "styles.css",
+      "app.js",
+      "theme.js",
+      "desktop/main.cjs",
+      "desktop/preload.cjs",
+      "desktop/filesystem.cjs",
+      "desktop/session-store.cjs",
+      "desktop/preferences-store.cjs",
+      "desktop/file-operations.cjs",
+      "desktop/explorer-actions.cjs",
+      "desktop/pane.ico",
+      "package.json"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "desktop/pane.ico"
+    },
+    "portable": {
+      "artifactName": "pane-${version}-portable-${arch}.${ext}",
+      "requestExecutionLevel": "user"
+    }
+  }
+}

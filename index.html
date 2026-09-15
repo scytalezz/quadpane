@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#f4f6f8">
+  <title>pane — 나란히 보는 파일 탐색기</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cg fill='%23356ae6'%3E%3Crect x='2' y='2' width='8' height='8' rx='2'/%3E%3Crect x='14' y='2' width='8' height='8' rx='2' opacity='.4'/%3E%3Crect x='2' y='14' width='8' height='8' rx='2' opacity='.65'/%3E%3Crect x='14' y='14' width='8' height='8' rx='2'/%3E%3C/g%3E%3C/svg%3E">
+  <script src="./theme.js"></script>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="appbar">
+      <a class="brand" href="./index.html" aria-label="pane 홈"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>pane<span class="brand-caption">파일 탐색기</span></a>
+      <div class="app-location"><span>파일 탐색기</span><span class="location-divider">/</span><strong id="app-workspace">내 작업 공간</strong></div>
+      <label class="search-box"><span id="search-icon"></span><input id="global-search" type="search" placeholder="열린 폴더에서 검색" aria-label="열린 폴더에서 검색" autocomplete="off"><kbd>Ctrl K</kbd></label>
+      <button class="icon-button app-theme" id="theme-toggle" aria-label="다크 모드" aria-pressed="false" title="다크 모드로 전환"></button>
+      <button class="icon-button app-help" id="help-button" aria-label="사용 안내" title="사용 안내"></button>
+    </header>
+
+    <aside class="sidebar" aria-label="탐색">
+      <div class="sidebar-content">
+        <div class="sidebar-section-heading">작업 공간</div>
+        <nav id="workspaces" aria-label="작업 공간"></nav>
+        <div class="sidebar-section-heading favorites-heading"><span>즐겨찾기</span><button type="button" class="icon-button" id="add-favorite-button" aria-label="현재 폴더 즐겨찾기 추가" title="현재 폴더 즐겨찾기 추가" disabled></button></div>
+        <nav id="favorites" aria-label="즐겨찾기"></nav>
+        <div class="sidebar-tip"><span class="tip-icon" id="tip-icon"></span><p>함께 쓰는 폴더를<br>한 화면에 모아보세요.</p></div>
+      </div>
+      <div class="drive-section"><div class="sidebar-section-heading">내 드라이브</div><nav id="drives" aria-label="내 드라이브"></nav><div class="sidebar-bottom"><span class="connection-dot"></span><span id="connection-status">PC 연결 확인 중</span></div></div>
+    </aside>
+
+    <main class="main-content">
+      <header class="workspace-header"><div><div class="workspace-eyebrow">작업 공간</div><h1 id="workspace-title">내 작업 공간</h1><p id="workspace-description">자주 쓰는 폴더를 나란히, 마지막 위치 그대로.</p></div><div class="layout-options"><span class="layout-label">화면 분할</span><div class="segmented-control" role="group" aria-label="화면 분할"><button data-layout="1" aria-label="1분할" title="1분할" aria-pressed="false" disabled></button><button data-layout="2" aria-label="2분할" title="2분할" aria-pressed="false" disabled></button><button data-layout="4" aria-label="4분할" title="4분할" aria-pressed="true" disabled></button></div></div></header>
+      <div class="toolbar"><div class="toolbar-actions"><button class="toolbar-button refresh-button" id="refresh-button" disabled><span id="refresh-icon"></span>새로고침</button><span class="toolbar-divider"></span><button class="toolbar-button" id="copy-button" title="선택한 항목 복사 (Ctrl + C)" disabled><span id="copy-icon"></span>복사</button><button class="toolbar-button" id="cut-button" title="선택한 항목 잘라내기 (Ctrl + X)" disabled><span id="cut-icon"></span>잘라내기</button><button class="toolbar-button" id="paste-button" title="현재 폴더에 붙여넣기 (Ctrl + V)" disabled><span id="paste-icon"></span>붙여넣기</button><button class="toolbar-button" id="transfer-button" title="다른 패널이나 작업 공간으로 복사 또는 이동" disabled><span id="transfer-icon"></span>다른 창으로</button><span class="toolbar-divider"></span><button class="toolbar-button" id="file-info-button" disabled><span id="file-info-icon"></span>파일 정보</button></div><div class="toolbar-context" id="toolbar-context"></div></div>
+      <div class="activity-bar" id="activity-strip"><p class="clipboard-status" id="clipboard-status" role="status"></p><p class="session-message" id="session-message" role="status" hidden></p><button type="button" class="activity-results-button" id="operation-results-button" aria-haspopup="dialog" aria-controls="transfer-result" hidden>작업 결과</button></div>
+      <div class="panels" id="panels" data-layout="4"></div>
+      <footer class="statusbar"><span class="storage-status" id="storage-status" role="status">폴더 위치 확인 중</span><span id="selection-status"></span><span class="status-hint">폴더 경로 입력<span class="status-key">Ctrl L</span></span></footer>
+    </main>
+  </div>
+
+  <dialog id="info-dialog" aria-labelledby="info-title"><div class="dialog-topline"><div id="info-icon" class="dialog-symbol"></div><button type="button" class="icon-button" data-close-dialog aria-label="닫기">×</button></div><h2 id="info-title"></h2><div id="info-content"></div><div class="dialog-actions"><button class="primary-button" data-close-dialog>확인</button></div></dialog>
+  <dialog id="transfer-dialog" class="transfer-dialog" aria-labelledby="transfer-title"><div class="dialog-topline"><div class="dialog-symbol" id="transfer-dialog-icon"></div><button type="button" class="icon-button" data-close-dialog aria-label="닫기">×</button></div><h2 id="transfer-title">다른 창으로 보내기</h2><p class="dialog-subtitle" id="transfer-description"></p><fieldset class="transfer-mode"><legend>작업</legend><label><input type="radio" name="transfer-operation" value="copy" checked>복사</label><label><input type="radio" name="transfer-operation" value="move">이동</label></fieldset><p class="info-label">대상 폴더</p><div id="transfer-destinations" class="transfer-destinations"></div><p class="dialog-subtitle">같은 이름의 항목은 덮어쓰지 않고 건너뜁니다.</p><div class="dialog-actions"><button class="primary-button" id="transfer-confirm" disabled>선택한 폴더에 복사</button></div></dialog>
+  <dialog id="name-dialog" aria-labelledby="name-title"><form id="name-form"><div class="dialog-topline"><div class="dialog-symbol" id="name-dialog-icon"></div><button type="button" class="icon-button" data-close-dialog aria-label="닫기">×</button></div><h2 id="name-title">이름 변경</h2><p class="dialog-subtitle" id="name-description"></p><label class="info-label" for="name-input">이름</label><input class="dialog-input" id="name-input" name="name" type="text" autocomplete="off" spellcheck="false" maxlength="255" required aria-describedby="name-error"><p class="dialog-error" id="name-error" role="alert" hidden></p><div class="dialog-actions"><button type="button" class="secondary-button" data-close-dialog>취소</button><button type="submit" class="primary-button" id="name-confirm">변경</button></div></form></dialog>
+  <dialog id="trash-dialog" aria-labelledby="trash-title" aria-describedby="trash-description"><div class="dialog-topline"><div class="dialog-symbol" id="trash-dialog-icon"></div><button type="button" class="icon-button" data-close-dialog aria-label="닫기">×</button></div><h2 id="trash-title">휴지통으로 이동</h2><p class="dialog-subtitle" id="trash-description"></p><ul class="trash-items" id="trash-items"></ul><p class="dialog-subtitle">영구 삭제하지 않습니다. 필요한 항목은 Windows 휴지통에서 복원할 수 있어요.</p><div class="dialog-actions"><button type="button" class="secondary-button" id="trash-cancel" data-close-dialog autofocus>취소</button><button type="button" class="danger-button" id="trash-confirm">휴지통으로 이동</button></div></dialog>
+  <div class="context-menu" id="file-context-menu" role="menu" aria-label="파일 작업" popover="manual"></div>
+  <section class="transfer-result" id="transfer-result" role="dialog" aria-label="파일 작업 결과" popover="manual" tabindex="-1"></section>
+  <div class="drag-feedback" id="drag-feedback" role="status" popover="manual"></div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

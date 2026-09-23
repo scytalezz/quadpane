@@ -41,4 +41,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $executables = (Get-ChildItem -LiteralPath dist-portable -Filter '*.exe').FullName
-          gh release create $env:GITHUB_REF_NAME @($executables) dist-portable/SHA256SUMS.txt --title "Quadpane $env:GITHUB_REF_NAME" --generate-notes
+          $notesPath = "docs/releases/$env:GITHUB_REF_NAME.md"
+          $notesArgs = if (Test-Path -LiteralPath $notesPath) { @('--notes-file', $notesPath) } else { @('--generate-notes') }
+          gh release create $env:GITHUB_REF_NAME @($executables) dist-portable/SHA256SUMS.txt --title "Quadpane $env:GITHUB_REF_NAME" --verify-tag @notesArgs

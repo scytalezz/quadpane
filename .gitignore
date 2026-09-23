@@ -1,5 +1,6 @@
 # Dependencies, build output and verification artifacts
 node_modules/
+/desktop/native/bin/
 /dist-portable/
 /.cache/
 /.checks/

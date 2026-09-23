@@ -105,7 +105,7 @@ let nameDraft = null;
 let trashDraft = null;
 let internalDrag = null;
 let dropTarget = null;
-let nativeDragOut = false;
+let shellMenuPending = false;
 let toastTimer;
 const workspace = () => workspaces[workspaceId];
 const activePane = () => workspace()?.panes[workspace().active];
@@ -270,11 +270,17 @@ function selectFile(pane,fileId,{toggle = false,range = false} = {}) {
   }
   updateSelection();
 }
-function copySelection(operation) {
+async function copySelection(operation) {
   const pane = activePane();
   const files = selectedFiles();
   if (!files.length || transferPending || pane.loading || pane.error || typeof bridge.transfer !== 'function') return;
   clipboard = {operation,sources:files.map((file) => file.path)};
+  if (typeof bridge.writeShellClipboard==='function') {
+    try {
+      const result = await bridge.writeShellClipboard(clipboard);
+      if (!result?.ok) throw new Error(result?.error?.message || 'Windows 클립보드에 복사하지 못했어요.');
+    } catch (error) {clipboard=null;clipboardRevision++;updateSelection();showToast(error.message);return;}
+  }
   clipboardRevision++;
   updateSelection();
   showToast(`${files.length}개 항목 ${operation==='move'?'이동':'복사'} 준비. 대상 창에서 붙여넣으세요.`);
@@ -358,10 +364,15 @@ async function runMutation(label,operation,source,action) {
 async function performTransfer(sources,destination,operation,fromClipboard = false) {
   if (!sources.length || !destination || transferPending || typeof bridge.transfer !== 'function') return;
   const revision = clipboardRevision;
+  const shellClipboardSequence = clipboard?.sequence;
   await runMutation(`${sources.length}개 항목 ${operation==='move'?'이동':'복사'} 중…`,operation,destination,async () => {
     const response = await bridge.transfer({sources:[...sources],destination,operation});
     if (!response?.ok) throw new Error(response?.error?.message || '파일 작업을 완료하지 못했어요.');
     const result = response.value;
+    if (fromClipboard && operation==='move' && shellClipboardSequence && typeof bridge.completeShellPaste==='function') {
+      const completion = await bridge.completeShellPaste({sequence:shellClipboardSequence,completed:result.completed.map((item) => item.source)});
+      if (!completion?.ok) showToast('파일 이동은 끝났지만 Windows 클립보드를 갱신하지 못했어요.');
+    }
     showTransferResult(result);
     if (fromClipboard && operation === 'move' && clipboard && clipboardRevision === revision) {
       const completed = new Set(result.completed.map((item) => pathKey(item.source)));
@@ -374,8 +385,18 @@ async function performTransfer(sources,destination,operation,fromClipboard = fal
     await refreshAffected(affectedPath,operation==='move'?result.completed:[]);
   });
 }
-function pasteSelection() {
+async function syncShellClipboard() {
+  if (typeof bridge.readShellClipboard!=='function') return;
+  const result = await bridge.readShellClipboard();
+  if (!result?.ok) throw new Error(result?.error?.message || 'Windows 클립보드를 읽지 못했어요.');
+  clipboard = result.value?.sources?.length ? result.value : null;
+  clipboardRevision++;
+  updateSelection();
+}
+async function pasteSelection() {
   const pane = activePane();
+  if (transferPending) return;
+  try {await syncShellClipboard();} catch (error) {showToast(error.message);return;}
   if (clipboard && pane?.loaded && !pane.loading && !pane.error) performTransfer(clipboard.sources,pane.path,clipboard.operation,true);
 }
 function openTransferDialog() {
@@ -409,7 +430,7 @@ function closeContextMenu(restoreFocus = false) {
   contextMenuState = null;
   if (restoreFocus && state) focusPaneContent(state.pane,state.fileId);
 }
-function openContextMenu(pane,row,x,y) {
+async function openContextMenu(pane,row,x,y,extended = false) {
   if (!ready || !pane) return;
   closeAddressMenu();
   closeTransferResult();
@@ -425,6 +446,27 @@ function openContextMenu(pane,row,x,y) {
     panelElement(pane).focus({preventScroll:true});
   }
   const files = selectedFiles(pane);
+  if (typeof bridge.shellMenu==='function') {
+    if (!pane.loaded || pane.loading || pane.error || transferPending) return;
+    transferPending = true;
+    shellMenuPending = true;
+    updateSelection();
+    try {
+      const result = await bridge.shellMenu({parent:pane.path,paths:files.map((file) => file.path),x,y,extended});
+      if (!result?.ok) throw new Error(result?.error?.message || 'Windows 메뉴를 열지 못했어요.');
+      // Rename requires an IShellView host. Use our existing dialog and path remapping.
+      if (result.value?.action==='rename' && files.length===1) {
+        transferPending = false;
+        activate(pane);
+        openNameDialog('rename');
+        return;
+      }
+      await refreshAffected(() => true);
+    } catch (error) {showToast(error.message || 'Windows 메뉴를 열지 못했어요.');}
+    finally {shellMenuPending = false;transferPending = false;updateSelection();}
+    try {await syncShellClipboard();} catch { /* clipboard can be temporarily busy */ }
+    return;
+  }
   const single = files.length===1 ? files[0] : null;
   const usable = pane.loaded && !pane.loading && !pane.error;
   const mutable = usable && !transferPending;
@@ -529,6 +571,9 @@ function windowsRoot(value) {
   return unc ? unc[0].toLowerCase() : '';
 }
 function dropOperation(sources,destination,event) {
+  // Chromium acknowledges a drop before our asynchronous transfer completes.
+  // Only our own source (which never deletes on OLE MOVE) can safely offer MOVE.
+  if (!internalDrag) return 'copy';
   if (event.ctrlKey) return 'copy';
   if (event.shiftKey) return 'move';
   const root = windowsRoot(destination);
@@ -563,7 +608,7 @@ function showDropFeedback(target,event) {
     target.element.classList.add('drop-target');
   }
   dropTarget = target;
-  const effect = internalDrag ? dropOperation(internalDrag.sources,target.path,event) : event.ctrlKey?'copy':event.shiftKey?'move':null;
+  const effect = internalDrag ? dropOperation(internalDrag.sources,target.path,event) : dropOperation([],target.path,event);
   const feedback = $('#drag-feedback');
   const text = effect ? `${target.name}에 ${effect==='move'?'이동':'복사'}${internalDrag?` · ${internalDrag.sources.length}개`:''}` : `${target.name}에 놓기 · Ctrl 복사 / Shift 이동`;
   if (feedback.textContent!==text) feedback.textContent=text;
@@ -975,7 +1020,7 @@ $('#panels').addEventListener('contextmenu',(event) => {
   const scroll = event.target.closest('.file-scroll');
   if (!scroll || !ready) return;
   event.preventDefault();
-  openContextMenu(paneFromElement(scroll),event.target.closest('[data-file]'),event.clientX,event.clientY);
+  openContextMenu(paneFromElement(scroll),event.target.closest('[data-file]'),event.clientX,event.clientY,event.shiftKey);
 });
 $('#file-context-menu').addEventListener('click',(event) => {
   const button = event.target.closest('[data-context-action]');
@@ -1018,13 +1063,15 @@ $('#panels').addEventListener('dragstart',(event) => {
   const sources = selectedFiles(pane).map((file) => file.path);
   if (!sources.length) {event.preventDefault();return;}
   closeAddressMenu();closeContextMenu();closeTransferResult();
-  if (event.altKey && typeof bridge.beginNativeDrag==='function') {
+  if (typeof bridge.beginNativeDrag==='function') {
     event.preventDefault();
     clearDragState();
-    nativeDragOut = true;
+    internalDrag = {sources,originPaneId:pane.id,native:true};
     Promise.resolve(bridge.beginNativeDrag(sources)).then((result) => {
       if (!result?.ok) showToast(result?.error?.message || '파일을 창 밖으로 끌지 못했어요.');
-    }).catch((error) => showToast(error.message || '파일을 창 밖으로 끌지 못했어요.'));
+      else if (result.value?.sourceRetained) showToast('대상 앱이 원본 삭제를 요청했지만 원본을 보존했어요. 대상에서 복사 결과를 확인해 주세요.');
+    }).catch((error) => showToast(error.message || '파일을 창 밖으로 끌지 못했어요.'))
+      .finally(() => {clearDragState();if (ready && !transferPending) refreshAffected(() => true);});
     return;
   }
   internalDrag = {sources,originPaneId:pane.id,token:crypto.randomUUID()};
@@ -1051,7 +1098,7 @@ $('#panels').addEventListener('drop',(event) => {
   const target = getDropTarget(event);
   let sources = [];
   try {
-    if (internalDrag && event.dataTransfer.getData('application/x-pane-selection')===internalDrag.token) sources=[...internalDrag.sources];
+    if (internalDrag && !internalDrag.native && event.dataTransfer.getData('application/x-pane-selection')===internalDrag.token) sources=[...internalDrag.sources];
     else if (typeof bridge.droppedPaths==='function' && event.dataTransfer.files.length) sources=bridge.droppedPaths(Array.from(event.dataTransfer.files));
   } catch {showToast('끌어온 파일 경로를 확인하지 못했어요.');}
   const validSources = Array.isArray(sources) ? [...new Set(sources.filter((source) => typeof source==='string' && source))] : [];
@@ -1062,7 +1109,7 @@ $('#panels').addEventListener('drop',(event) => {
   activate(target.pane);
   performTransfer(validSources,target.path,operation);
 });
-document.addEventListener('dragend',clearDragState);
+document.addEventListener('dragend',() => {if (!internalDrag?.native) clearDragState();});
 document.addEventListener('dragover',(event) => {
   if (!hasSupportedDrop(event)) return;
   event.preventDefault();
@@ -1219,10 +1266,11 @@ $$('[data-close-dialog]').forEach((button) => button.addEventListener('click',()
 $('#help-button').addEventListener('click',() => {
   $('#info-icon').innerHTML=icon('grid');
   $('#info-title').textContent='pane 사용 안내';
-  $('#info-content').innerHTML='<p class="dialog-subtitle">여러 폴더를 나란히 보고, 마지막 위치에서 이어서 탐색하세요.</p><ul class="help-list"><li>주소창에 경로를 입력하고 <kbd>Enter</kbd>를 누르세요. <kbd>Ctrl + L</kbd>은 주소 선택, <kbd>Alt + ↓</kbd>는 경로 목록이에요.</li><li>즐겨찾기 옆 <strong>＋</strong>로 현재 폴더를 추가할 수 있어요. 열린 위치·분할·정렬·즐겨찾기는 다시 실행해도 유지돼요.</li><li><kbd>Ctrl</kbd> 또는 <kbd>Shift</kbd>와 함께 클릭하면 여러 항목을 선택해요. <kbd>Ctrl + A</kbd>로 모두 선택할 수 있어요.</li><li>파일과 빈 공간에서 <strong>오른쪽 클릭</strong>하면 작업 메뉴를 열어요. 키보드에서는 <kbd>Shift + F10</kbd> 또는 메뉴 키를 사용하세요.</li><li><kbd>Ctrl + C</kbd> 복사, <kbd>Ctrl + X</kbd> 잘라내기 후 다른 창이나 작업 공간에서 <kbd>Ctrl + V</kbd>로 붙여넣으세요.</li><li>선택한 항목을 다른 창이나 폴더에 끌어 놓으세요. 같은 드라이브는 이동, 다른 드라이브는 복사하며 <kbd>Ctrl</kbd>은 복사, <kbd>Shift</kbd>는 이동이에요. 같은 이름의 항목은 건너뜁니다.</li><li>Windows 탐색기의 파일도 끌어올 수 있어요. pane에서 다른 앱으로 끌어낼 때는 <kbd>Alt</kbd>를 누른 채 드래그를 시작하세요.</li><li>두 번 클릭하거나 <kbd>Enter</kbd>를 누르면 폴더 또는 연결된 앱에서 파일을 열어요. <kbd>Alt + Enter</kbd>로 파일 정보를 확인하세요.</li><li><kbd>F2</kbd> 이름 변경, <kbd>Ctrl + Shift + N</kbd> 새 폴더, <kbd>Delete</kbd> 휴지통 이동을 지원해요. 삭제는 확인 후 실행합니다.</li><li><kbd>Alt + ↑</kbd> 상위 폴더, <kbd>Alt + ←</kbd> 이전 폴더, <kbd>F5</kbd> 새로고침, <kbd>Ctrl + K</kbd> 검색을 지원해요.</li></ul>';
+  $('#info-content').innerHTML='<p class="dialog-subtitle">여러 폴더를 나란히 보고, 마지막 위치에서 이어서 탐색하세요.</p><ul class="help-list"><li>주소창에 경로를 입력하고 <kbd>Enter</kbd>를 누르세요. <kbd>Ctrl + L</kbd>은 주소 선택, <kbd>Alt + ↓</kbd>는 경로 목록이에요.</li><li>즐겨찾기 옆 <strong>＋</strong>로 현재 폴더를 추가할 수 있어요. 열린 위치·분할·정렬·즐겨찾기는 다시 실행해도 유지돼요.</li><li><kbd>Ctrl</kbd> 또는 <kbd>Shift</kbd>와 함께 클릭하면 여러 항목을 선택해요. <kbd>Ctrl + A</kbd>로 모두 선택할 수 있어요.</li><li>파일과 빈 공간에서 <strong>오른쪽 클릭</strong>하면 Windows 탐색기 메뉴를 열어요. 키보드에서는 <kbd>Shift + F10</kbd> 또는 메뉴 키를 사용하세요.</li><li><kbd>Ctrl + C</kbd> 복사, <kbd>Ctrl + X</kbd> 잘라내기 후 다른 창이나 작업 공간에서 <kbd>Ctrl + V</kbd>로 붙여넣으세요.</li><li>선택한 항목을 다른 창이나 폴더에 끌어 놓으세요. 같은 드라이브는 이동, 다른 드라이브는 복사하며 <kbd>Ctrl</kbd>은 복사, <kbd>Shift</kbd>는 이동이에요. 같은 이름의 항목은 건너뜁니다.</li><li>Windows 탐색기의 파일도 끌어올 수 있어요. 다른 앱으로도 바로 끌어 놓으세요. 외부에서 들어오는 파일은 안전하게 복사해요.</li><li>두 번 클릭하거나 <kbd>Enter</kbd>를 누르면 폴더 또는 연결된 앱에서 파일을 열어요. <kbd>Alt + Enter</kbd>로 파일 정보를 확인하세요.</li><li><kbd>F2</kbd> 이름 변경, <kbd>Ctrl + Shift + N</kbd> 새 폴더, <kbd>Delete</kbd> 휴지통 이동을 지원해요. 삭제는 확인 후 실행합니다.</li><li><kbd>Alt + ↑</kbd> 상위 폴더, <kbd>Alt + ←</kbd> 이전 폴더, <kbd>F5</kbd> 새로고침, <kbd>Ctrl + K</kbd> 검색을 지원해요.</li></ul>';
   $('#info-dialog').showModal();
 });
 document.addEventListener('keydown',(event) => {
+  if (event.key==='Escape' && shellMenuPending) {event.preventDefault();bridge.cancelShell?.();return;}
   if ($('dialog[open]') || !ready) return;
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key==='k') {event.preventDefault();closeAddressMenu();$('#global-search').focus();$('#global-search').select();return;}
@@ -1266,8 +1314,8 @@ document.addEventListener('pointerdown',(event) => {
 });
 window.addEventListener('resize',() => {closeAddressMenu();closeContextMenu();closeTransferResult();clearDropFeedback();});
 window.addEventListener('focus',() => {
-  if (!nativeDragOut || !ready || transferPending) return;
-  nativeDragOut = false;
+  if (!ready || transferPending) return;
+  syncShellClipboard().catch(() => {});
   allPanes().filter((pane) => pane.loaded && !pane.loading).forEach((pane) => navigate(pane,pane.path,{refresh:true,preserveDraft:true}));
 });
 renderSidebar();

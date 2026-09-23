@@ -1,6 +1,6 @@
 {
   "name": "quadpane",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "Quadpane — a multi-pane file explorer for Windows, inspired by Q-Dir.",
   "license": "MIT",
@@ -16,9 +16,11 @@
   "scripts": {
     "start": "node server.mjs",
     "check": "node scripts/check.cjs",
-    "test": "node --test desktop/native-files.test.cjs desktop/preferences-store.test.cjs desktop/file-operations.test.cjs desktop/explorer-actions.test.cjs",
+    "test": "node --test desktop/*.test.cjs",
+    "build:native": "node desktop/build-shell-helper.cjs",
+    "predesktop": "npm run build:native",
     "desktop": "electron .",
-    "build:portable": "node desktop/create-icon.cjs && electron-builder --win portable --x64"
+    "build:portable": "npm run build:native && node desktop/create-icon.cjs && electron-builder --win portable --x64"
   },
   "build": {
     "appId": "com.quadpane.app",
@@ -38,10 +40,18 @@
       "desktop/preferences-store.cjs",
       "desktop/file-operations.cjs",
       "desktop/explorer-actions.cjs",
+      "desktop/shell-menu.cjs",
+      "desktop/shell-errors.cjs",
       "desktop/quadpane.ico",
       "package.json"
     ],
     "asar": true,
+    "extraResources": [
+      {
+        "from": "desktop/native/bin/Quadpane.Shell.exe",
+        "to": "native/Quadpane.Shell.exe"
+      }
+    ],
     "win": {
       "target": [
         {

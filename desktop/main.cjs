@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, screen } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -6,7 +6,12 @@ const { discoverDrives, getFavorites, listDirectory, errorResult } = require('./
 const { createSessionStore } = require('./session-store.cjs');
 const { createPreferencesStore } = require('./preferences-store.cjs');
 const { createTransferService, transferError } = require('./file-operations.cjs');
-const { createExplorerActions, createMutationCoordinator, actionError } = require('./explorer-actions.cjs');
+const { createExplorerActions, createMutationCoordinator, actionError, validatePaths } = require('./explorer-actions.cjs');
+const { createShellMenuService } = require('./shell-menu.cjs');
+const { shellErrorResult } = require('./shell-errors.cjs');
+const shellMenus = createShellMenuService(app.isPackaged
+  ? path.join(process.resourcesPath, 'native', 'Quadpane.Shell.exe')
+  : path.join(__dirname, 'native', 'bin', 'Quadpane.Shell.exe'));
 
 const applicationId = 'com.quadpane.app';
 const indexPath = path.join(__dirname, '..', 'index.html');
@@ -56,6 +61,8 @@ let quitAfterTransfer = false;
 const explorerChannels = new Set(['pane:open-path', 'pane:reveal-path', 'pane:trash-items', 'pane:rename-item', 'pane:create-folder', 'pane:begin-native-drag']);
 
 function applicationErrorResult(error, channel) {
+  const shellResult = shellErrorResult(error, channel);
+  if (shellResult) return shellResult;
   if (['INVALID_PREFERENCES', 'PREFERENCES_WRITE_FAILED'].includes(error?.code)) {
     return { ok: false, error: { code: error.code, message: error.message } };
   }
@@ -89,13 +96,34 @@ function registerFileAccess() {
   handle('pane:trash-items', request => explorerActions.trashItems(request));
   handle('pane:rename-item', request => explorerActions.renameItem(request));
   handle('pane:create-folder', request => explorerActions.createFolder(request));
-  handle('pane:begin-native-drag', async request => {
-    const files = await explorerActions.prepareNativeDrag(request);
-    const icon = await app.getFileIcon(files[0], { size: 'normal' })
-      .catch(() => nativeImage.createFromPath(path.join(__dirname, 'quadpane.ico')));
+  handle('pane:read-shell-clipboard', () => shellMenus.show({}, {}, 'readClipboard'));
+  handle('pane:complete-shell-paste', request => {
+    if (!Number.isInteger(request?.sequence) || !Array.isArray(request?.completed) || request.completed.length > 1000
+      || !request.completed.every(filename => typeof filename === 'string')) throw new Error('Invalid clipboard completion');
+    return shellMenus.show({}, request, 'completePaste');
+  });
+  handle('pane:write-shell-clipboard', request => {
+    const files = validatePaths(request?.sources);
+    return shellMenus.show({ parent: path.win32.dirname(files[0]), paths: files, operation: request.operation }, {}, 'writeClipboard');
+  });
+  handle('pane:cancel-shell', () => {shellMenus.cancel();return null;});
+  handle('pane:shell-menu', request => mutations.run(async () => {
+    const window = mainWindow;
+    const bounds = window.getContentBounds();
+    const zoom = window.webContents.getZoomFactor();
+    if (!Number.isFinite(request?.x) || !Number.isFinite(request?.y)) throw new Error('Invalid menu position');
+    const point = screen.dipToScreenPoint({
+      x: bounds.x + Math.round(Math.max(0, Math.min(bounds.width, request.x * zoom))),
+      y: bounds.y + Math.round(Math.max(0, Math.min(bounds.height, request.y * zoom))),
+    });
+    const handle = window.getNativeWindowHandle();
+    return shellMenus.show(request, { ...point, owner: handle.readBigUInt64LE().toString() });
+  }));
+  handle('pane:begin-native-drag', request => {
+    if (mutations.pending) throw Object.assign(new Error('Busy'), { code: 'ACTION_BUSY' });
+    const files = validatePaths(request);
     if (!mainWindow || mainWindow.isDestroyed()) throw Object.assign(new Error('Window closed'), { code: 'ACTION_FAILED' });
-    mainWindow.webContents.startDrag({ files, icon });
-    return null;
+    return shellMenus.show({ parent: path.win32.dirname(files[0]), paths: files }, {}, 'drag');
   });
 }
 
@@ -132,6 +160,7 @@ function createWindow() {
     if (!app.commandLine.hasSwitch('pane-smoke-test')) window.show();
   });
   window.on('close', event => {
+    if (shellMenus.pending) shellMenus.cancel();
     const pending = mutations.pending;
     if (!pending) return;
     event.preventDefault();
@@ -159,10 +188,13 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null);
     registerFileAccess();
+    shellMenus.start(); // Warm STA helper before the user begins a short drag gesture.
     createWindow();
   });
   app.on('window-all-closed', () => app.quit());
+  app.on('will-quit', () => shellMenus.close());
   app.on('before-quit', event => {
+    if (shellMenus.pending) shellMenus.cancel();
     if (!mutations.pending) return;
     event.preventDefault();
     if (!quitAfterTransfer) {

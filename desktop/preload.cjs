@@ -14,6 +14,11 @@ contextBridge.exposeInMainWorld('pane', Object.freeze({
   renameItem: request => ipcRenderer.invoke('pane:rename-item', request),
   createFolder: request => ipcRenderer.invoke('pane:create-folder', request),
   beginNativeDrag: paths => ipcRenderer.invoke('pane:begin-native-drag', paths),
+  shellMenu: request => ipcRenderer.invoke('pane:shell-menu', request),
+  readShellClipboard: () => ipcRenderer.invoke('pane:read-shell-clipboard'),
+  completeShellPaste: request => ipcRenderer.invoke('pane:complete-shell-paste', request),
+  writeShellClipboard: request => ipcRenderer.invoke('pane:write-shell-clipboard', request),
+  cancelShell: () => ipcRenderer.invoke('pane:cancel-shell'),
   droppedPaths: files => {
     if (!Array.isArray(files) || files.length > 1000) return [];
     // Only real File objects supplied by Chromium expose a filesystem path.

@@ -10,6 +10,8 @@
   --folder-edge:#9e7725;--folder:#f2d089;--file-edge:#6d7d92;--file-paper:#f9fafc;
   --pdf-ink:#b34545;--pdf-paper:#fff1f1;--fig-ink:#8055a3;--fig-paper:#fbf7ff;
   --image-ink:#397c68;--image-paper:#f3faf6;--doc-ink:#386eaa;--doc-paper:#f2f7ff;
+  --hwp-ink:#086f88;--hwp-paper:#edfaff;--word-ink:#285eb4;--word-paper:#f0f5ff;
+  --presentation-ink:#b04c17;--presentation-paper:#fff5eb;--text-ink:#626b76;--text-paper:#f5f6f8;
   --sheet-ink:#317d5d;--sheet-paper:#f1faf4;--zip-ink:#8a6b26;--zip-paper:#fcfaf2;--video-ink:#805ba2;--video-paper:#faf6fe;
   --code-ink:#6659a8;--code-paper:#f7f5ff;--audio-ink:#36778f;--audio-paper:#f1f9fc;--executable-ink:#63718a;--executable-paper:#f4f6fa;
   --error:#bc5656;--scrollbar:#c3ccd9;--toast-surface:#29394e;--toast-ink:#f2f6fc;--toast-line:#374a66;
@@ -25,6 +27,8 @@
   --folder-edge:#efd083;--folder:#b98b39;--file-edge:#bac5d3;--file-paper:#2a3039;
   --pdf-ink:#f2aca5;--pdf-paper:#3c2d32;--fig-ink:#d2b7ef;--fig-paper:#352e41;
   --image-ink:#a3dac9;--image-paper:#293c35;--doc-ink:#b1d2ff;--doc-paper:#29394d;
+  --hwp-ink:#82d8ef;--hwp-paper:#223b44;--word-ink:#a8c9ff;--word-paper:#29394d;
+  --presentation-ink:#ffc08f;--presentation-paper:#443126;--text-ink:#c3c9d1;--text-paper:#30353c;
   --sheet-ink:#a3dcb9;--sheet-paper:#2b3c31;--zip-ink:#efd089;--zip-paper:#3c362b;--video-ink:#d0b7ed;--video-paper:#352e41;
   --code-ink:#c4caff;--code-paper:#30334a;--audio-ink:#b1dce9;--audio-paper:#293c43;--executable-ink:#c1cad7;--executable-paper:#323740;
   --error:#ffb4b4;--scrollbar:#637184;--toast-surface:#303b4b;--toast-ink:#f2f6fc;--toast-line:#6a82a4;
@@ -70,6 +74,13 @@ dialog{background:var(--surface);border:1px solid var(--line);border-radius:12px
 .file-table tbody tr:focus-visible{outline:2px solid var(--blue);outline-offset:-2px}
 .file-table tbody tr.selected td:first-child{box-shadow:inset 3px 0 0 var(--blue)}
 .file-table tbody tr.cut-pending .file-name>span{text-decoration:underline dashed var(--muted);text-underline-offset:3px}
+.file-name>.file-svg,.file-name>.folder-svg{width:20px;height:20px;flex-shrink:0}
+.file-format-letter{stroke:none;fill:currentColor;font-size:9px;font-weight:700;font-family:"Segoe UI","Malgun Gothic",sans-serif;text-anchor:middle;letter-spacing:0}
+.file-icon-hwp{color:var(--hwp-ink);stroke:var(--hwp-ink);fill:var(--hwp-paper)}
+.file-icon-word{color:var(--word-ink);stroke:var(--word-ink);fill:var(--word-paper)}
+.file-icon-presentation{color:var(--presentation-ink);stroke:var(--presentation-ink);fill:var(--presentation-paper)}
+.file-icon-text{color:var(--text-ink);stroke:var(--text-ink);fill:var(--text-paper)}
+.file-icon-file{color:var(--file-edge);stroke:var(--file-edge);fill:var(--file-paper)}
 .file-icon-code{color:var(--code-ink);stroke:var(--code-ink);fill:var(--code-paper)}
 .file-icon-audio{color:var(--audio-ink);stroke:var(--audio-ink);fill:var(--audio-paper)}
 .file-icon-executable{color:var(--executable-ink);stroke:var(--executable-ink);fill:var(--executable-paper)}

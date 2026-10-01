@@ -43,10 +43,26 @@ function icon(name, className = '') {
 function fileIcon(file) {
   if (file.type === 'folder') return icon('folder', 'folder-svg');
   const ext = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : '';
-  const types = {pdf:'pdf',png:'image',jpg:'image',jpeg:'image',gif:'image',webp:'image',bmp:'image',ico:'image',svg:'image',heic:'image',doc:'doc',docx:'doc',txt:'doc',md:'doc',hwp:'doc',hwpx:'doc',rtf:'doc',xls:'sheet',xlsx:'sheet',csv:'sheet',zip:'zip','7z':'zip',rar:'zip',tar:'zip',gz:'zip',mp4:'video',mov:'video',mkv:'video',avi:'video',webm:'video',mp3:'audio',wav:'audio',flac:'audio',m4a:'audio',ogg:'audio',js:'code',ts:'code',jsx:'code',tsx:'code',json:'code',html:'code',css:'code',py:'code',rs:'code',c:'code',cpp:'code',sh:'code',ps1:'code',exe:'executable',msi:'executable',dll:'executable'};
-  const kind = Object.hasOwn(types,ext) ? types[ext] : 'doc';
+  const types = {
+    hwp:'hwp',hwpx:'hwp',hwt:'hwp',
+    doc:'word',docx:'word',docm:'word',dot:'word',dotx:'word',dotm:'word',
+    ppt:'presentation',pptx:'presentation',pptm:'presentation',pps:'presentation',ppsx:'presentation',ppsm:'presentation',pot:'presentation',potx:'presentation',potm:'presentation',odp:'presentation',
+    xls:'sheet',xlsx:'sheet',xlsm:'sheet',xlsb:'sheet',xlt:'sheet',xltx:'sheet',xltm:'sheet',csv:'sheet',ods:'sheet',
+    txt:'text',md:'text',rtf:'text',log:'text',odt:'text',pdf:'pdf',
+    png:'image',jpg:'image',jpeg:'image',gif:'image',webp:'image',bmp:'image',ico:'image',svg:'image',heic:'image',tif:'image',tiff:'image',avif:'image',
+    zip:'zip','7z':'zip',rar:'zip',tar:'zip',gz:'zip',
+    mp4:'video',mov:'video',mkv:'video',avi:'video',webm:'video',
+    mp3:'audio',wav:'audio',flac:'audio',m4a:'audio',ogg:'audio',
+    js:'code',ts:'code',jsx:'code',tsx:'code',json:'code',html:'code',css:'code',py:'code',rs:'code',c:'code',cpp:'code',sh:'code',ps1:'code',
+    exe:'executable',msi:'executable',dll:'executable',
+  };
+  const kind = Object.hasOwn(types,ext) ? types[ext] : 'file';
   const symbols = {
-    doc:'<path d="M8 12h8m-8 4h6"/>',
+    file:'',
+    hwp:'<text x="12" y="16.5" text-anchor="middle" class="file-format-letter">한</text>',
+    word:'<text x="12" y="16.5" text-anchor="middle" class="file-format-letter">W</text>',
+    presentation:'<text x="12" y="16.5" text-anchor="middle" class="file-format-letter">P</text>',
+    text:'<path d="M8 11h8m-8 3h8m-8 3h5"/>',
     pdf:'<path d="M9 9c0 5-2 8-3 8 3-1 6-2 11-2-4-1-6-3-7-6Z"/>',
     image:'<circle cx="9" cy="11" r="1.2"/><path d="m7 18 4-4 2 2 2-3 2 5"/>',
     sheet:'<path d="M8 11h9v7H8zM8 14.5h9M12 11v7"/>',

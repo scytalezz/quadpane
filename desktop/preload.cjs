@@ -9,6 +9,12 @@ contextBridge.exposeInMainWorld('pane', Object.freeze({
     ipcRenderer.on('pane:navigate-back', listener);
     return () => { ipcRenderer.removeListener('pane:navigate-back', listener); };
   },
+  onNavigateForward: callback => {
+    if (typeof callback !== 'function') throw new TypeError('Navigation callback must be a function');
+    const listener = () => callback();
+    ipcRenderer.on('pane:navigate-forward', listener);
+    return () => { ipcRenderer.removeListener('pane:navigate-forward', listener); };
+  },
   bootstrap: () => ipcRenderer.invoke('pane:bootstrap'),
   listDirectory: path => ipcRenderer.invoke('pane:list-directory', path),
   saveSession: session => ipcRenderer.invoke('pane:save-session', session),

@@ -148,10 +148,21 @@ function createWindow() {
   });
   mainWindow = window;
   window.setMenu(null);
-  window.on('app-command', (_event, command) => {
-    if (command !== 'browser-backward' || mainWindow !== window
+  const sendPaneNavigation = direction => {
+    if (mainWindow !== window
       || window.isDestroyed() || window.webContents.isDestroyed()) return;
-    window.webContents.send('pane:navigate-back');
+    window.webContents.send(`pane:navigate-${direction}`);
+  };
+  window.on('app-command', (_event, command) => {
+    if (command !== 'browser-backward' && command !== 'browser-forward') return;
+    sendPaneNavigation(command === 'browser-backward' ? 'back' : 'forward');
+  });
+  window.webContents.on('before-mouse-event', (event, input) => {
+    if (input.button !== 'back' && input.button !== 'forward') return;
+    if (input.type !== 'mouseDown' && input.type !== 'mouseUp') return;
+    // Block both phases so hovering another pane cannot change the active pane.
+    event.preventDefault();
+    if (input.type === 'mouseUp') sendPaneNavigation(input.button);
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {

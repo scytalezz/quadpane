@@ -5,6 +5,7 @@ const paths = {
   search:'<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/>',
   folder:'<path d="M3 6.5h6l2 2h10v11H3z"/><path d="M3 9V5h6l2 2h8v1.5"/>',
   back:'<path d="m13.5 6-6 6 6 6M8 12h12"/>',
+  forward:'<path d="m10.5 6 6 6-6 6M16 12H4"/>',
   up:'<path d="m6 10 6-6 6 6M12 4v16"/>',
   refresh:'<path d="M20 11a8 8 0 1 0-2.3 6.7M20 4v7h-7"/>',
   chevron:'<path d="m9 5 7 7-7 7"/>',
@@ -137,7 +138,7 @@ const panelElement = (pane) => document.getElementById(`panel-${pane.id}`);
 const addressElement = (pane) => $('.path-input',panelElement(pane));
 
 function makePane(workspaceKey,index,saved) {
-  return {id:`${workspaceKey}-${index}`,workspaceId:workspaceKey,index,path:saved.path,name:saved.path,parent:null,breadcrumbs:[],entries:[],history:[],selected:new Set(),selectionAnchor:null,sort:saved.sort,direction:saved.direction,loaded:false,loading:false,error:null,requestToken:0,pendingPath:null,draft:saved.path,draftVersion:0,dirty:false,addressOptions:[]};
+  return {id:`${workspaceKey}-${index}`,workspaceId:workspaceKey,index,path:saved.path,name:saved.path,parent:null,breadcrumbs:[],entries:[],history:[],forwardHistory:[],selected:new Set(),selectionAnchor:null,sort:saved.sort,direction:saved.direction,loaded:false,loading:false,error:null,requestToken:0,pendingPath:null,draft:saved.path,draftVersion:0,dirty:false,addressOptions:[]};
 }
 function defaultSession() {
   const fallback = favorites.find((item) => item.id === 'home')?.path || drives[0]?.path || favorites[0]?.path || '';
@@ -565,7 +566,10 @@ function remapReferences(source,destination) {
     clipboard.sources = clipboard.sources.map(remap);
     clipboardRevision++;
   }
-  allPanes().forEach((pane) => {pane.history = pane.history.map(remap);});
+  allPanes().forEach((pane) => {
+    pane.history = pane.history.map(remap);
+    pane.forwardHistory = pane.forwardHistory.map(remap);
+  });
 }
 function openTrashDialog() {
   const pane = activePane();
@@ -654,7 +658,7 @@ function createPanel(pane) {
   element.className = 'file-panel';
   element.dataset.pane = pane.id;
   element.tabIndex = -1;
-  element.innerHTML = `<div class="panel-tabbar"><div class="panel-tab">${icon('folder','folder-svg')}<span class="panel-tab-label"></span></div><div class="panel-controls"><span class="active-badge" hidden>현재 창</span><button class="icon-button" data-action="expand" title="이 창 확대"></button></div></div><div class="panel-navigation"><button class="icon-button" data-action="back" aria-label="뒤로" title="뒤로 (Alt + ←)" disabled>${icon('back')}</button><button class="icon-button" data-action="up" aria-label="상위 폴더" title="상위 폴더 (Alt + ↑)" disabled>${icon('up')}</button><form class="path-form"><input class="path-input" aria-label="${pane.index+1}번 패널 폴더 경로" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="폴더 경로 입력"><button class="icon-button path-dropdown-toggle" type="button" data-action="address-menu" aria-label="${pane.index+1}번 패널 경로 목록" aria-haspopup="menu" aria-expanded="false" aria-controls="address-menu-${pane.id}" title="즐겨찾기와 최근 경로 (Alt + ↓)">${icon('down')}</button><button class="icon-button path-go" type="submit" aria-label="입력한 경로 열기" title="입력한 경로 열기 (Enter)">${icon('chevron')}</button><div class="address-menu" id="address-menu-${pane.id}" role="menu" aria-label="${pane.index+1}번 패널 경로 목록" popover="manual"></div></form><button class="icon-button" data-action="refresh" aria-label="폴더 새로고침" title="폴더 새로고침 (F5)">${icon('refresh')}</button></div><div class="panel-message" role="status" hidden></div><div class="file-scroll"></div><div class="panel-footer"><span class="panel-count"></span><span class="panel-footer-right"></span></div>`;
+  element.innerHTML = `<div class="panel-tabbar"><div class="panel-tab">${icon('folder','folder-svg')}<span class="panel-tab-label"></span></div><div class="panel-controls"><span class="active-badge" hidden>현재 창</span><button class="icon-button" data-action="expand" title="이 창 확대"></button></div></div><div class="panel-navigation"><button class="icon-button" data-action="back" aria-label="뒤로" title="뒤로 (Alt + ←)" disabled>${icon('back')}</button><button class="icon-button" data-action="forward" aria-label="앞으로" title="앞으로 (Alt + →)" disabled>${icon('forward')}</button><button class="icon-button" data-action="up" aria-label="상위 폴더" title="상위 폴더 (Alt + ↑)" disabled>${icon('up')}</button><form class="path-form"><input class="path-input" aria-label="${pane.index+1}번 패널 폴더 경로" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="폴더 경로 입력"><button class="icon-button path-dropdown-toggle" type="button" data-action="address-menu" aria-label="${pane.index+1}번 패널 경로 목록" aria-haspopup="menu" aria-expanded="false" aria-controls="address-menu-${pane.id}" title="즐겨찾기와 최근 경로 (Alt + ↓)">${icon('down')}</button><button class="icon-button path-go" type="submit" aria-label="입력한 경로 열기" title="입력한 경로 열기 (Enter)">${icon('chevron')}</button><div class="address-menu" id="address-menu-${pane.id}" role="menu" aria-label="${pane.index+1}번 패널 경로 목록" popover="manual"></div></form><button class="icon-button" data-action="refresh" aria-label="폴더 새로고침" title="폴더 새로고침 (F5)">${icon('refresh')}</button></div><div class="panel-message" role="status" hidden></div><div class="file-scroll"></div><div class="panel-footer"><span class="panel-count"></span><span class="panel-footer-right"></span></div>`;
   $('#panels').append(element);
   addressElement(pane).value = pane.path;
   renderPanel(pane);
@@ -666,7 +670,8 @@ function renderPanel(pane) {
   panel.setAttribute('aria-busy',String(pane.loading));
   $('.panel-tab-label',panel).textContent = pane.name || '폴더';
   $('.panel-tab-label',panel).title = pane.path;
-  $('[data-action="back"]',panel).disabled = !pane.history.length;
+  $('[data-action="back"]',panel).disabled = pane.loading || !pane.history.length;
+  $('[data-action="forward"]',panel).disabled = pane.loading || !pane.forwardHistory.length;
   $('[data-action="up"]',panel).disabled = !pane.parent;
   $('[data-action="refresh"]',panel).disabled = !pane.path;
   const message = $('.panel-message',panel);
@@ -777,9 +782,11 @@ function focusPaneContent(pane,fileId) {
   target.focus({preventScroll:true});
   if (target !== panel) target.scrollIntoView({block:'nearest'});
 }
-function navigateBack(pane = activePane()) {
-  if (!ready || !pane || pane.loading || !pane.history.length || transferPending || shellMenuPending || $('dialog[open]')) return;
-  return navigate(pane,pane.history.at(-1),{back:true,focus:true});
+function navigateHistory(direction,pane = activePane()) {
+  if (!['back','forward'].includes(direction) || !ready || !pane || pane.loading || transferPending || shellMenuPending || $('dialog[open]')) return;
+  const history = direction==='back' ? pane.history : pane.forwardHistory;
+  if (!history.length) return;
+  return navigate(pane,history.at(-1),{history:direction,focus:true});
 }
 async function navigate(pane,requestedPath,options = {}) {
   if (!ready || !pane || typeof requestedPath !== 'string') return;
@@ -788,7 +795,7 @@ async function navigate(pane,requestedPath,options = {}) {
   const token = ++pane.requestToken;
   const draftVersion = pane.draftVersion;
   const mayUpdateDraft = !options.preserveDraft || !pane.dirty;
-  const previousPath = pane.path;
+  const previousPath = pane.error?.historyOrigin ?? pane.path;
   const previousSelected = new Set(selectedFiles(pane).map((file) => pathKey(file.path)));
   const previousAnchor = pane.entries.find((file) => file.id===pane.selectionAnchor)?.path;
   pane.loading = true;
@@ -802,8 +809,17 @@ async function navigate(pane,requestedPath,options = {}) {
     const directory = result.value;
     if (typeof directory?.path !== 'string' || !Array.isArray(directory.entries)) throw new Error('폴더 정보를 읽지 못했어요. 다시 시도해 주세요.');
     const changedPath = !samePath(directory.path,previousPath);
-    if (options.back) pane.history.pop();
-    else if (changedPath && pane.loaded && !options.initial) pane.history.push(previousPath);
+    const historyOrigin = relocatedPath(options.historyOrigin ?? previousPath,pane.refreshRelocations || []);
+    if (options.history==='back') {
+      pane.history.pop();
+      pane.forwardHistory.push(historyOrigin);
+    } else if (options.history==='forward') {
+      pane.forwardHistory.pop();
+      pane.history.push(historyOrigin);
+    } else if (changedPath && !options.initial && !options.refresh) {
+      if (pane.loaded) pane.history.push(historyOrigin);
+      pane.forwardHistory = [];
+    }
     pane.path = directory.path;
     pane.name = directory.name || directory.path;
     pane.parent = directory.parent;
@@ -830,7 +846,7 @@ async function navigate(pane,requestedPath,options = {}) {
     if (token !== pane.requestToken) return;
     pane.loading = false;
     pane.pendingPath = null;
-    pane.error = {path:requestedPath,message:error.message || '폴더를 열지 못했어요. 경로를 확인해 주세요.'};
+    pane.error = {path:requestedPath,message:error.message || '폴더를 열지 못했어요. 경로를 확인해 주세요.',history:options.history,historyOrigin:relocatedPath(options.historyOrigin ?? previousPath,pane.refreshRelocations || [])};
     if (options.refresh && samePath(requestedPath,pane.path)) {
       pane.loaded = false;
       pane.entries = [];
@@ -847,9 +863,12 @@ async function navigate(pane,requestedPath,options = {}) {
   if (token === pane.requestToken && pane.refreshAfterLoad) {
     pane.refreshAfterLoad = false;
     const relocations = pane.refreshRelocations || [];
-    pane.refreshRelocations = [];
     const failedDestination = pane.error && samePath(pane.error.path,requestedPath) && relocations.some((item) => pathWithin(requestedPath,item.source));
-    navigate(pane,relocatedPath(failedDestination?requestedPath:pane.path,relocations),{refresh:true,preserveDraft:true});
+    // Only a failed read still needs to commit the traversal, from its relocated origin.
+    const history = failedDestination ? options.history : undefined;
+    const historyOrigin = failedDestination ? relocatedPath(options.historyOrigin ?? previousPath,relocations) : undefined;
+    pane.refreshRelocations = [];
+    navigate(pane,relocatedPath(failedDestination?requestedPath:pane.path,relocations),{refresh:true,preserveDraft:true,history,historyOrigin});
   }
 }
 function setLayout(layout) {
@@ -1024,10 +1043,10 @@ $('#panels').addEventListener('click',(event) => {
   }
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action==='address-menu') {if (openAddressPane===pane) closeAddressMenu();else openAddressMenu(pane);}
-  if (action==='back') navigateBack(pane);
+  if (action==='back' || action==='forward') navigateHistory(action,pane);
   if (action==='up' && pane.parent) navigate(pane,pane.parent,{focus:true});
   if (action==='refresh') navigate(pane,pane.path,{refresh:true,preserveDraft:true});
-  if (action==='retry' && pane.error) navigate(pane,pane.error.path);
+  if (action==='retry' && pane.error) navigate(pane,pane.error.path,{history:pane.error.history,historyOrigin:pane.error.historyOrigin});
   if (action==='expand') setLayout(workspace().layout===1?4:1);
 });
 $('#panels').addEventListener('dblclick',(event) => {
@@ -1286,7 +1305,7 @@ $$('[data-close-dialog]').forEach((button) => button.addEventListener('click',()
 $('#help-button').addEventListener('click',() => {
   $('#info-icon').innerHTML=icon('grid');
   $('#info-title').textContent='pane 사용 안내';
-  $('#info-content').innerHTML='<p class="dialog-subtitle">여러 폴더를 나란히 보고, 마지막 위치에서 이어서 탐색하세요.</p><ul class="help-list"><li>주소창에 경로를 입력하고 <kbd>Enter</kbd>를 누르세요. <kbd>Ctrl + L</kbd>은 주소 선택, <kbd>Alt + ↓</kbd>는 경로 목록이에요.</li><li>즐겨찾기 옆 <strong>＋</strong>로 현재 폴더를 추가할 수 있어요. 열린 위치·분할·정렬·즐겨찾기는 다시 실행해도 유지돼요.</li><li><kbd>Ctrl</kbd> 또는 <kbd>Shift</kbd>와 함께 클릭하면 여러 항목을 선택해요. <kbd>Ctrl + A</kbd>로 모두 선택할 수 있어요.</li><li>파일과 빈 공간에서 <strong>오른쪽 클릭</strong>하면 Windows 탐색기 메뉴를 열어요. 키보드에서는 <kbd>Shift + F10</kbd> 또는 메뉴 키를 사용하세요.</li><li><kbd>Ctrl + C</kbd> 복사, <kbd>Ctrl + X</kbd> 잘라내기 후 다른 창이나 작업 공간에서 <kbd>Ctrl + V</kbd>로 붙여넣으세요.</li><li>선택한 항목을 다른 창이나 폴더에 끌어 놓으세요. 같은 드라이브는 이동, 다른 드라이브는 복사하며 <kbd>Ctrl</kbd>은 복사, <kbd>Shift</kbd>는 이동이에요. 같은 이름의 항목은 건너뜁니다.</li><li>Windows 탐색기의 파일도 끌어올 수 있어요. 다른 앱으로도 바로 끌어 놓으세요. 외부에서 들어오는 파일은 안전하게 복사해요.</li><li>두 번 클릭하거나 <kbd>Enter</kbd>를 누르면 폴더 또는 연결된 앱에서 파일을 열어요. <kbd>Alt + Enter</kbd>로 파일 정보를 확인하세요.</li><li><kbd>F2</kbd> 이름 변경, <kbd>Ctrl + Shift + N</kbd> 새 폴더, <kbd>Delete</kbd> 휴지통 이동을 지원해요. 삭제는 확인 후 실행합니다.</li><li><kbd>Alt + ↑</kbd> 상위 폴더, <kbd>Alt + ←</kbd> 이전 폴더, <kbd>F5</kbd> 새로고침, <kbd>Ctrl + K</kbd> 검색을 지원해요.</li></ul>';
+  $('#info-content').innerHTML='<p class="dialog-subtitle">여러 폴더를 나란히 보고, 마지막 위치에서 이어서 탐색하세요.</p><ul class="help-list"><li>주소창에 경로를 입력하고 <kbd>Enter</kbd>를 누르세요. <kbd>Ctrl + L</kbd>은 주소 선택, <kbd>Alt + ↓</kbd>는 경로 목록이에요.</li><li>즐겨찾기 옆 <strong>＋</strong>로 현재 폴더를 추가할 수 있어요. 열린 위치·분할·정렬·즐겨찾기는 다시 실행해도 유지돼요.</li><li><kbd>Ctrl</kbd> 또는 <kbd>Shift</kbd>와 함께 클릭하면 여러 항목을 선택해요. <kbd>Ctrl + A</kbd>로 모두 선택할 수 있어요.</li><li>파일과 빈 공간에서 <strong>오른쪽 클릭</strong>하면 Windows 탐색기 메뉴를 열어요. 키보드에서는 <kbd>Shift + F10</kbd> 또는 메뉴 키를 사용하세요.</li><li><kbd>Ctrl + C</kbd> 복사, <kbd>Ctrl + X</kbd> 잘라내기 후 다른 창이나 작업 공간에서 <kbd>Ctrl + V</kbd>로 붙여넣으세요.</li><li>선택한 항목을 다른 창이나 폴더에 끌어 놓으세요. 같은 드라이브는 이동, 다른 드라이브는 복사하며 <kbd>Ctrl</kbd>은 복사, <kbd>Shift</kbd>는 이동이에요. 같은 이름의 항목은 건너뜁니다.</li><li>Windows 탐색기의 파일도 끌어올 수 있어요. 다른 앱으로도 바로 끌어 놓으세요. 외부에서 들어오는 파일은 안전하게 복사해요.</li><li>두 번 클릭하거나 <kbd>Enter</kbd>를 누르면 폴더 또는 연결된 앱에서 파일을 열어요. <kbd>Alt + Enter</kbd>로 파일 정보를 확인하세요.</li><li><kbd>F2</kbd> 이름 변경, <kbd>Ctrl + Shift + N</kbd> 새 폴더, <kbd>Delete</kbd> 휴지통 이동을 지원해요. 삭제는 확인 후 실행합니다.</li><li><kbd>Alt + ↑</kbd> 상위 폴더, <kbd>Alt + ←</kbd> 뒤로, <kbd>Alt + →</kbd> 앞으로 이동할 수 있어요. 마우스의 뒤로·앞으로 버튼도 현재 창에 적용돼요. <kbd>F5</kbd> 새로고침, <kbd>Ctrl + K</kbd> 검색을 지원해요.</li></ul>';
   $('#info-dialog').showModal();
 });
 document.addEventListener('keydown',(event) => {
@@ -1322,7 +1341,7 @@ document.addEventListener('keydown',(event) => {
     return;
   }
   if (!editing && event.altKey && event.key==='ArrowUp' && activePane().parent) {event.preventDefault();navigate(activePane(),activePane().parent,{focus:true});return;}
-  if (!editing && event.altKey && event.key==='ArrowLeft') {event.preventDefault();navigateBack();return;}
+  if (!editing && event.altKey && ['ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();navigateHistory(event.key==='ArrowLeft'?'back':'forward');return;}
   if (event.key==='Escape' && openAddressPane) {event.preventDefault();closeAddressMenu(true);return;}
   if (event.key==='Escape' && $('#global-search').value) {$('#global-search').value='';visiblePanes().forEach(renderFiles);return;}
   if (event.key==='Escape' && !editing && clipboard && !transferPending) {clipboard=null;clipboardRevision++;updateSelection();}
@@ -1338,6 +1357,7 @@ window.addEventListener('focus',() => {
   syncShellClipboard().catch(() => {});
   allPanes().filter((pane) => pane.loaded && !pane.loading).forEach((pane) => navigate(pane,pane.path,{refresh:true,preserveDraft:true}));
 });
-bridge?.onNavigateBack?.(() => navigateBack());
+bridge?.onNavigateBack?.(() => navigateHistory('back'));
+bridge?.onNavigateForward?.(() => navigateHistory('forward'));
 renderSidebar();
 bootstrap();

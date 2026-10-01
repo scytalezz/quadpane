@@ -777,6 +777,10 @@ function focusPaneContent(pane,fileId) {
   target.focus({preventScroll:true});
   if (target !== panel) target.scrollIntoView({block:'nearest'});
 }
+function navigateBack(pane = activePane()) {
+  if (!ready || !pane || pane.loading || !pane.history.length || transferPending || shellMenuPending || $('dialog[open]')) return;
+  return navigate(pane,pane.history.at(-1),{back:true,focus:true});
+}
 async function navigate(pane,requestedPath,options = {}) {
   if (!ready || !pane || typeof requestedPath !== 'string') return;
   if (openAddressPane === pane) closeAddressMenu();
@@ -1020,7 +1024,7 @@ $('#panels').addEventListener('click',(event) => {
   }
   const action = event.target.closest('[data-action]')?.dataset.action;
   if (action==='address-menu') {if (openAddressPane===pane) closeAddressMenu();else openAddressMenu(pane);}
-  if (action==='back' && pane.history.length) navigate(pane,pane.history.at(-1),{back:true,focus:true});
+  if (action==='back') navigateBack(pane);
   if (action==='up' && pane.parent) navigate(pane,pane.parent,{focus:true});
   if (action==='refresh') navigate(pane,pane.path,{refresh:true,preserveDraft:true});
   if (action==='retry' && pane.error) navigate(pane,pane.error.path);
@@ -1318,7 +1322,7 @@ document.addEventListener('keydown',(event) => {
     return;
   }
   if (!editing && event.altKey && event.key==='ArrowUp' && activePane().parent) {event.preventDefault();navigate(activePane(),activePane().parent,{focus:true});return;}
-  if (!editing && event.altKey && event.key==='ArrowLeft' && activePane().history.length) {event.preventDefault();navigate(activePane(),activePane().history.at(-1),{back:true,focus:true});return;}
+  if (!editing && event.altKey && event.key==='ArrowLeft') {event.preventDefault();navigateBack();return;}
   if (event.key==='Escape' && openAddressPane) {event.preventDefault();closeAddressMenu(true);return;}
   if (event.key==='Escape' && $('#global-search').value) {$('#global-search').value='';visiblePanes().forEach(renderFiles);return;}
   if (event.key==='Escape' && !editing && clipboard && !transferPending) {clipboard=null;clipboardRevision++;updateSelection();}
@@ -1334,5 +1338,6 @@ window.addEventListener('focus',() => {
   syncShellClipboard().catch(() => {});
   allPanes().filter((pane) => pane.loaded && !pane.loading).forEach((pane) => navigate(pane,pane.path,{refresh:true,preserveDraft:true}));
 });
+bridge?.onNavigateBack?.(() => navigateBack());
 renderSidebar();
 bootstrap();

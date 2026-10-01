@@ -37,6 +37,7 @@
 | `Ctrl+L` / `Ctrl+K` | 현재 주소창 선택 / 열린 폴더 검색 |
 | 주소창에서 `Alt+↓` | 경로 목록 열기 |
 | `Alt+←` / `Alt+↑` | 이전 폴더 / 상위 폴더 |
+| 마우스 뒤로가기 버튼 | 현재 활성 패널의 이전 폴더 |
 | `F5` | 현재 패널 새로고침 |
 | `Ctrl+A` | 표시된 항목 전체 선택 |
 | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` | 복사 준비 / 이동 준비 / 붙여넣기 |
@@ -76,6 +77,7 @@ npm run desktop
 node scripts/verification/verify-real-files.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-workflows.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-explorer.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
+node scripts/verification/verify-navigation.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-launcher.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 ```
 
@@ -91,7 +93,7 @@ node scripts/verification/verify-launcher.cjs 'Playwright가 들어 있는 node_
 | [PORTABLE.md](PORTABLE.md) | 포터블 실행, 설정 저장 구조, 개발·빌드 상세 |
 | [VERIFICATION.md](VERIFICATION.md) | 실행 검증 결과와 검증 범위·한계 |
 | [Windows 셸 통합](docs/windows-shell.md) | 클래식 메뉴·드래그·클립보드 동작과 검증 범위 |
-| [v0.5.1 릴리스 노트](docs/releases/v0.5.1.md) | 파일 형식별 아이콘과 표시 크기 변경 |
+| [v0.5.1 릴리스 노트](docs/releases/v0.5.1.md) | 파일 아이콘 개선과 마우스 뒤로가기 지원 |
 | [v0.5.0 릴리스 노트](docs/releases/v0.5.0.md) | 과거 변경 사항·제한 사항과 검증 기록 |
 
 ## 제한 사항

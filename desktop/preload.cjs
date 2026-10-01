@@ -3,6 +3,12 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('pane', Object.freeze({
+  onNavigateBack: callback => {
+    if (typeof callback !== 'function') throw new TypeError('Navigation callback must be a function');
+    const listener = () => callback();
+    ipcRenderer.on('pane:navigate-back', listener);
+    return () => { ipcRenderer.removeListener('pane:navigate-back', listener); };
+  },
   bootstrap: () => ipcRenderer.invoke('pane:bootstrap'),
   listDirectory: path => ipcRenderer.invoke('pane:list-directory', path),
   saveSession: session => ipcRenderer.invoke('pane:save-session', session),

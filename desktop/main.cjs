@@ -148,6 +148,11 @@ function createWindow() {
   });
   mainWindow = window;
   window.setMenu(null);
+  window.on('app-command', (_event, command) => {
+    if (command !== 'browser-backward' || mainWindow !== window
+      || window.isDestroyed() || window.webContents.isDestroyed()) return;
+    window.webContents.send('pane:navigate-back');
+  });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event, url) => {
     if (url !== indexURL) event.preventDefault();

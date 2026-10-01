@@ -43,6 +43,8 @@ NSIS portable 런처는 실행에 필요한 파일을 Windows 임시 폴더에 �
 
 ## 파일 관리와 제한
 
+마우스 뒤로가기 버튼을 누르면 현재 활성 패널의 이전 폴더로 이동합니다. 포인터가 다른 패널 위에 있어도 활성 패널을 기준으로 하며, 방문 기록이 없거나 폴더를 불러오는 중, 파일 작업 중, 대화상자가 열려 있을 때는 이동하지 않습니다.
+
 파일 두 번 클릭과 `Enter`는 Windows 기본 앱을 호출합니다. **파일 정보** 또는 `Alt+Enter`로 메타데이터를 확인하고, **탐색기에서 보기**로 해당 항목을 Windows 탐색기에 표시합니다. 오른쪽 클릭은 Windows IContextMenu 기반 클래식 셸 메뉴입니다. 셸 Rename은 앱의 이름 변경 대화상자로 연결합니다. 셸 메뉴 명령은 내장 파일 작업과 달리 Windows/확장 프로그램의 정책을 따릅니다.
 
 `F2`는 이름 변경, `Ctrl+Shift+N`은 현재 폴더에 새 폴더를 만듭니다. Windows 예약 이름·금지 문자·끝 공백과 마침표를 거부하며, 기존 항목을 덮어쓰지 않습니다. 이름 변경이 일부만 진행되고 복구도 실패하면 남은 임시 경로와 원래 경로를 알립니다.
@@ -83,6 +85,7 @@ npm run build:portable
 node scripts/verification/verify-real-files.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-workflows.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-explorer.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
+node scripts/verification/verify-navigation.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-launcher.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 ```
 
@@ -91,6 +94,8 @@ node scripts/verification/verify-launcher.cjs 'Playwright가 들어 있는 node_
 `verify-explorer.cjs`는 새 `verify-native-shell.cjs`를 실행합니다. 셸 메뉴·OLE 드래그·클립보드 IPC를 가로채고, 다중 선택·키보드·배경 메뉴 요청, 셸 Rename 연결, Ctrl+C/V, 디스크 기반 File 드롭의 실제 복사·이동과 피드백을 검사합니다. 실제 Windows 메뉴 클릭·Explorer/브라우저 드롭 완료·클립보드 왕복 검증을 대신하지 않습니다.
 
 `npm test`는 별도로 실제 Windows COM 메뉴 열거와 도우미 취소/복구를 검사합니다. 상세 구조·공식 API 문서·수동 검증 항목은 [windows-shell.md](docs/windows-shell.md)를 참고하세요.
+
+`verify-navigation.cjs`는 빌드된 앱의 격리된 테스트 창에 Windows 마우스 뒤로가기 명령을 보내 활성 패널·작업 공간의 방문 기록, 빈 기록, 대화상자, 기존 뒤로가기 조작을 검사합니다. 실제 마우스 하드웨어와 제조사별 버튼 재지정은 검사하지 않습니다.
 
 과거 검증 기록(v0.5.0): `npm run check` 28개 파일 통과, 전체 `npm test` 59개 통과·1개 건너뜀·실패 0개. 로컬 `0.5.0-fixed` 빌드가 성공했으며, 실제 패키징 앱에서 클립보드 읽기와 메뉴 IPC 요청의 중첩 충돌을 재현한 뒤 수정 결과를 확인했습니다. 이 기록은 v0.5.1의 테스트·빌드 통과를 의미하지 않습니다.
 

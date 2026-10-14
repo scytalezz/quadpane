@@ -103,6 +103,7 @@ let workspaceId = 'design';
 let favorites = [];
 let userFavorites = [];
 let recentPaths = [];
+let displayPreferences = {showHidden:false,showExtensions:true};
 let drives = [];
 let ready = false;
 let bootstrapToken = 0;
@@ -123,12 +124,14 @@ let trashDraft = null;
 let internalDrag = null;
 let dropTarget = null;
 let shellMenuPending = false;
+let marquee = null;
+let marqueeGuard = false;
 let toastTimer;
 const workspace = () => workspaces[workspaceId];
 const activePane = () => workspace()?.panes[workspace().active];
 const allPanes = () => Object.values(workspaces).flatMap((item) => item.panes);
 const visiblePanes = () => workspace().layout === 1 ? [activePane()] : workspace().panes.slice(0,workspace().layout);
-const selectedFiles = (pane = activePane()) => pane?.entries.filter((file) => pane.selected.has(file.id)) || [];
+const selectedFiles = (pane = activePane()) => pane?.entries.filter((file) => pane.selected.has(file.id) && isFileVisible(file)) || [];
 const selectedFile = () => selectedFiles().length === 1 ? selectedFiles()[0] : null;
 const pathKey = (value) => String(value || '').replace(/\//g,'\\').replace(/\\+$/,'').toLocaleLowerCase('en-US');
 const samePath = (left,right) => pathKey(left) === pathKey(right);
@@ -186,13 +189,13 @@ function persistSession() {
 function persistPreferences() {
   if (!ready || typeof bridge.savePreferences !== 'function') return;
   const revision = ++preferenceRevision;
-  const snapshot = {favorites:userFavorites.map((item) => ({...item})),recentPaths:[...recentPaths]};
+  const snapshot = {favorites:userFavorites.map((item) => ({...item})),recentPaths:[...recentPaths],...displayPreferences};
   let request;
   try { request = bridge.savePreferences(snapshot); }
   catch (error) { request = Promise.reject(error); }
   Promise.resolve(request).then((result) => {
     if (revision !== preferenceRevision) return;
-    if (!result?.ok) throw new Error(result?.error?.message || '즐겨찾기를 저장하지 못했어요.');
+    if (!result?.ok) throw new Error(result?.error?.message || '설정을 저장하지 못했어요.');
     userFavorites = result.value.favorites;
     recentPaths = result.value.recentPaths;
     preferenceError = '';
@@ -201,7 +204,7 @@ function persistPreferences() {
     renderStorageMessage();
   }).catch((error) => {
     if (revision !== preferenceRevision) return;
-    preferenceError = `즐겨찾기와 최근 경로를 저장하지 못했어요. ${error.message || '설정 폴더를 확인해 주세요.'}`;
+    preferenceError = `보기 설정·즐겨찾기·최근 경로를 저장하지 못했어요. ${error.message || '설정 폴더를 확인해 주세요.'}`;
     renderStorageMessage();
   });
 }
@@ -270,6 +273,7 @@ function openAddressMenu(pane) {
 }
 function selectFile(pane,fileId,{toggle = false,range = false} = {}) {
   const rows = sortedFiles(pane);
+  if (!rows.some((file) => file.id === fileId)) return;
   if (range && pane.selectionAnchor) {
     const start = rows.findIndex((file) => file.id === pane.selectionAnchor);
     const end = rows.findIndex((file) => file.id === fileId);
@@ -302,18 +306,19 @@ async function copySelection(operation) {
   updateSelection();
   showToast(`${files.length}개 항목 ${operation==='move'?'이동':'복사'} 준비. 대상 창에서 붙여넣으세요.`);
 }
-function showTransferResult(result) {
+function showTransferResult(result,warning = '') {
   const root = $('#transfer-result');
   const verb = ({move:'이동',copy:'복사',trash:'휴지통 이동',rename:'이름 변경',create:'폴더 만들기'})[result.operation] || '파일 작업';
   const issues = [...result.skipped.map((item) => ({...item,label:'건너뜀'})),...result.failed.map((item) => ({...item,label:'실패'}))];
   const summary = `${verb} 완료 ${result.completed.length}개${result.skipped.length?` · 건너뜀 ${result.skipped.length}개`:''}${result.failed.length?` · 실패 ${result.failed.length}개`:''}`;
   root.innerHTML = `<div class="transfer-result-summary"><span>${summary}</span><button type="button" class="icon-button" data-dismiss-transfer aria-label="파일 작업 결과 닫기">${icon('close')}</button></div>${issues.length?`<details class="transfer-result-details" open><summary>작업하지 못한 항목 ${issues.length}개</summary><ul>${issues.map((item) => `<li><strong>${escapeHtml(item.label)} · ${escapeHtml(item.source)}</strong><span>${escapeHtml(item.message)}${item.code?` (${escapeHtml(item.code)})`:''}</span></li>`).join('')}</ul></details>`:'<p class="dialog-subtitle">요청한 작업을 완료했어요.</p>'}`;
+  if (warning) root.insertAdjacentHTML('beforeend',`<p class="transfer-result-warning" role="status">${escapeHtml(warning)}</p>`);
   const button = $('#operation-results-button');
   button.hidden = false;
-  button.textContent = issues.length ? '작업 결과 · 확인 필요' : '작업 결과';
+  button.textContent = issues.length || warning ? '작업 결과 · 확인 필요' : '작업 결과';
   button.title = summary;
-  button.classList.toggle('has-issues',Boolean(issues.length));
-  showToast(summary);
+  button.classList.toggle('has-issues',Boolean(issues.length || warning));
+  showToast(warning ? `${summary} · ${warning}` : summary);
 }
 function closeTransferResult(restoreFocus = false) {
   const root = $('#transfer-result');
@@ -386,13 +391,19 @@ async function performTransfer(sources,destination,operation,fromClipboard = fal
     const response = await bridge.transfer({sources:[...sources],destination,operation});
     if (!response?.ok) throw new Error(response?.error?.message || '파일 작업을 완료하지 못했어요.');
     const result = response.value;
+    const completedSources = sources.filter((source) => result.completed.some((item) => pathWithin(source,item.source)));
+    let clipboardWarning = '';
     if (fromClipboard && operation==='move' && shellClipboardSequence && typeof bridge.completeShellPaste==='function') {
-      const completion = await bridge.completeShellPaste({sequence:shellClipboardSequence,completed:result.completed.map((item) => item.source)});
-      if (!completion?.ok) showToast('파일 이동은 끝났지만 Windows 클립보드를 갱신하지 못했어요.');
+      try {
+        const completion = await bridge.completeShellPaste({sequence:shellClipboardSequence,completed:completedSources});
+        if (!completion?.ok) clipboardWarning = 'Windows 클립보드를 갱신하지 못했어요. 다음 붙여넣기 전에 항목을 다시 선택해 복사하거나 잘라내세요.';
+      } catch {
+        clipboardWarning = 'Windows 클립보드를 갱신하지 못했어요. 다음 붙여넣기 전에 항목을 다시 선택해 복사하거나 잘라내세요.';
+      }
     }
-    showTransferResult(result);
+    showTransferResult(result,clipboardWarning);
     if (fromClipboard && operation === 'move' && clipboard && clipboardRevision === revision) {
-      const completed = new Set(result.completed.map((item) => pathKey(item.source)));
+      const completed = new Set(completedSources.map(pathKey));
       clipboard.sources = clipboard.sources.filter((source) => !completed.has(pathKey(source)));
       if (!clipboard.sources.length) clipboard = null;
       clipboardRevision++;
@@ -610,6 +621,121 @@ function clearDragState() {
   internalDrag = null;
   $$('.drag-source').forEach((row) => row.classList.remove('drag-source'));
 }
+function marqueeViewport(state) {
+  const rect = state.scroll.getBoundingClientRect();
+  const left = rect.left + state.scroll.clientLeft;
+  const top = rect.top + state.scroll.clientTop;
+  return {left,top,right:left+state.scroll.clientWidth,bottom:top+state.scroll.clientHeight,bodyTop:top+state.headerHeight};
+}
+function marqueePoint(state,view) {
+  return {
+    x:Math.max(view.left,Math.min(state.x,view.right))-view.left+state.scroll.scrollLeft,
+    y:Math.max(view.bodyTop,Math.min(state.y,view.bottom))-view.top+state.scroll.scrollTop,
+  };
+}
+function paintMarquee(state) {
+  const view = marqueeViewport(state);
+  const point = marqueePoint(state,view);
+  const bounds = {left:Math.min(state.origin.x,point.x),right:Math.max(state.origin.x,point.x),top:Math.min(state.origin.y,point.y),bottom:Math.max(state.origin.y,point.y)};
+  const left = Math.max(bounds.left,state.scroll.scrollLeft);
+  const top = Math.max(bounds.top,state.scroll.scrollTop+state.headerHeight);
+  const right = Math.min(bounds.right,state.scroll.scrollLeft+state.scroll.clientWidth);
+  const bottom = Math.min(bounds.bottom,state.scroll.scrollTop+state.scroll.clientHeight);
+  Object.assign(state.rectangle.style,{left:`${left}px`,top:`${top}px`,width:`${Math.max(0,right-left)}px`,height:`${Math.max(0,bottom-top)}px`});
+  const next = new Set(state.additive ? state.selected : []);
+  let anchor = state.additive ? state.anchor : null;
+  for (const row of state.rows) {
+    if (bounds.right>row.left && bounds.left<row.right && bounds.bottom>row.top && bounds.top<row.bottom) {
+      next.add(row.id);
+      anchor = row.id;
+    }
+  }
+  state.pane.selectionAnchor = anchor;
+  if (next.size!==state.pane.selected.size || [...next].some((id) => !state.pane.selected.has(id))) {
+    state.pane.selected = next;
+    updateSelection();
+  }
+}
+function marqueeFrame(time) {
+  const state = marquee;
+  if (!state?.started) return;
+  if (!state.scroll.isConnected || panelElement(state.pane).hidden) {finishMarquee(true);return;}
+  const elapsed = Math.min(32,Math.max(0,time-(state.lastTime ?? time)))/1000;
+  state.lastTime = time;
+  const view = marqueeViewport(state);
+  const speed = (position,min,max) => {
+    const edge = Math.min(36,(max-min)/3);
+    if (edge<=0) return 0;
+    if (position<min+edge) return -800*Math.min(1,(min+edge-position)/edge);
+    if (position>max-edge) return 800*Math.min(1,(position-max+edge)/edge);
+    return 0;
+  };
+  state.scroll.scrollTop += speed(state.y,view.bodyTop,view.bottom)*elapsed;
+  state.scroll.scrollLeft += speed(state.x,view.left,view.right)*elapsed;
+  paintMarquee(state);
+  state.frame = requestAnimationFrame(marqueeFrame);
+}
+function beginMarquee(event) {
+  if (!ready || marquee || internalDrag || transferPending || event.button!==0 || event.isPrimary===false || event.pointerType!=='mouse') return;
+  const scroll = event.target.closest('.file-scroll');
+  if (!scroll || event.target.closest('[data-file],thead,button,input,a')) return;
+  const pane = paneFromElement(scroll);
+  if (!pane?.loaded || pane.loading || pane.error) return;
+  const state = {pane,scroll,pointerId:event.pointerId,x:event.clientX,y:event.clientY,startX:event.clientX,startY:event.clientY,
+    selected:new Set(selectedFiles(pane).map((file) => file.id)),anchor:pane.selectionAnchor,
+    additive:event.ctrlKey || event.metaKey || event.shiftKey,headerHeight:$('thead',scroll)?.getBoundingClientRect().height || 0,started:false,frame:null,rectangle:null};
+  const view = marqueeViewport(state);
+  // Leave the native scrollbars and sticky table header available for their own gestures.
+  if (state.x<view.left || state.x>=view.right || state.y<view.bodyTop || state.y>=view.bottom) return;
+  try {scroll.setPointerCapture(event.pointerId);} catch {return;}
+  state.origin = marqueePoint(state,view);
+  state.rows = $$('[data-file]',scroll).map((row) => {
+    const rect = row.getBoundingClientRect();
+    return {id:row.dataset.file,left:rect.left-view.left+scroll.scrollLeft,right:rect.right-view.left+scroll.scrollLeft,top:rect.top-view.top+scroll.scrollTop,bottom:rect.bottom-view.top+scroll.scrollTop};
+  });
+  marquee = state;
+  marqueeGuard = true;
+  activate(pane);
+  panelElement(pane).focus({preventScroll:true});
+  document.body.classList.add('marquee-selecting');
+  event.preventDefault();
+}
+function moveMarquee(event) {
+  const state = marquee;
+  if (!state || event.pointerId!==state.pointerId) return;
+  if (!(event.buttons & 1)) {finishMarquee(true);return;}
+  event.preventDefault();
+  state.x = event.clientX;
+  state.y = event.clientY;
+  if (!state.started) {
+    if (Math.hypot(state.x-state.startX,state.y-state.startY)<4) return;
+    state.started = true;
+    state.rectangle = document.createElement('div');
+    state.rectangle.className = 'selection-marquee';
+    state.rectangle.setAttribute('aria-hidden','true');
+    state.scroll.append(state.rectangle);
+    state.frame = requestAnimationFrame(marqueeFrame);
+  }
+  paintMarquee(state);
+}
+function finishMarquee(cancel = false) {
+  const state = marquee;
+  if (!state) return;
+  marquee = null;
+  if (state.frame!==null) cancelAnimationFrame(state.frame);
+  state.rectangle?.remove();
+  document.body.classList.remove('marquee-selecting');
+  if (state.scroll.hasPointerCapture(state.pointerId)) state.scroll.releasePointerCapture(state.pointerId);
+  if (cancel) {
+    state.pane.selected = new Set(state.selected);
+    state.pane.selectionAnchor = state.anchor;
+  } else if (!state.started && !state.additive) {
+    state.pane.selected.clear();
+    state.pane.selectionAnchor = null;
+  }
+  updateSelection();
+  // Click is still dispatched after pointer capture ends; only a fresh press lifts the guard.
+}
 function getDropTarget(event) {
   const scroll = event.target.closest?.('.file-scroll');
   const pane = scroll && paneFromElement(scroll);
@@ -636,9 +762,31 @@ function showDropFeedback(target,event) {
   positionOverlay(feedback,event.clientX+16,event.clientY+18);
   return effect || 'copy';
 }
-function sortedFiles(pane) {
+function isFileVisible(file) {
   const query = $('#global-search').value.trim().toLocaleLowerCase('ko');
-  return pane.entries.filter((file) => file.name.toLocaleLowerCase('ko').includes(query)).sort((a,b) => {
+  return (displayPreferences.showHidden || !file.hidden) && file.name.toLocaleLowerCase('ko').includes(query);
+}
+function displayFileName(file) {
+  if (displayPreferences.showExtensions || file.type !== 'file' || file.name.startsWith('.')) return file.name;
+  const dot = file.name.lastIndexOf('.');
+  return dot > 0 && dot < file.name.length-1 ? file.name.slice(0,dot) : file.name;
+}
+function closeViewSettings(restoreFocus = false) {
+  const menu = $('#view-settings');
+  if (!menu.matches(':popover-open')) return;
+  menu.hidePopover();
+  $('#view-settings-button').setAttribute('aria-expanded','false');
+  if (restoreFocus) $('#view-settings-button').focus({preventScroll:true});
+}
+function setDisplayPreference(key,value) {
+  if (!ready || !Object.hasOwn(displayPreferences,key)) return;
+  finishMarquee(true);
+  displayPreferences[key] = Boolean(value);
+  allPanes().forEach(renderFiles);
+  persistPreferences();
+}
+function sortedFiles(pane) {
+  return pane.entries.filter(isFileVisible).sort((a,b) => {
     if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
     let compared;
     if (pane.sort === 'size') compared = (a.size ?? -1) - (b.size ?? -1);
@@ -689,24 +837,29 @@ function renderPanel(pane) {
   renderFiles(pane);
 }
 function renderFiles(pane) {
+  if (marquee?.pane === pane) finishMarquee(true);
   const panel = panelElement(pane);
   const rows = sortedFiles(pane);
   const visibleIds = new Set(rows.map((file) => file.id));
   pane.selected = new Set([...pane.selected].filter((id) => visibleIds.has(id)));
+  if (!visibleIds.has(pane.selectionAnchor)) pane.selectionAnchor = null;
   const query = $('#global-search').value.trim();
-  const table = `<table class="file-table" role="grid" aria-multiselectable="true" aria-label="${escapeHtml(pane.name)} 파일 목록"><colgroup><col class="name-column"><col class="date-column"><col class="size-column"></colgroup><thead><tr>${[['name','이름'],['modified','수정한 날짜'],['size','크기']].map(([key,label]) => `<th scope="col" aria-sort="${pane.sort===key?(pane.direction===1?'ascending':'descending'):'none'}"><button class="sort-button" data-sort="${key}" aria-label="${label}순 정렬">${label}${pane.sort===key?icon('sort',pane.direction===1?'sort-ascending':''):''}</button></th>`).join('')}</tr></thead><tbody>${rows.map((file) => `<tr tabindex="0" draggable="true" data-file="${file.id}" aria-selected="${pane.selected.has(file.id)}" class="${pane.selected.has(file.id)?'selected':''}" aria-label="${escapeHtml(file.name)}, ${file.type==='folder'?'폴더':sizeText(file.size)}"><td><span class="file-name">${fileIcon(file)}<span title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span></span></td><td>${modifiedDate(file.modified)}</td><td title="${file.size === null?'':escapeHtml(`${file.size.toLocaleString('ko-KR')} 바이트`)}">${sizeText(file.size)}</td></tr>`).join('')}</tbody></table>`;
+  const table = `<table class="file-table" role="grid" aria-multiselectable="true" aria-label="${escapeHtml(pane.name)} 파일 목록"><colgroup><col class="name-column"><col class="date-column"><col class="size-column"></colgroup><thead><tr>${[['name','이름'],['modified','수정한 날짜'],['size','크기']].map(([key,label]) => `<th scope="col" aria-sort="${pane.sort===key?(pane.direction===1?'ascending':'descending'):'none'}"><button class="sort-button" data-sort="${key}" aria-label="${label}순 정렬">${label}${pane.sort===key?icon('sort',pane.direction===1?'sort-ascending':''):''}</button></th>`).join('')}</tr></thead><tbody>${rows.map((file) => `<tr tabindex="0" draggable="true" data-file="${file.id}" aria-selected="${pane.selected.has(file.id)}" class="${pane.selected.has(file.id)?'selected':''}" aria-label="${escapeHtml(file.name)}, ${file.type==='folder'?'폴더':sizeText(file.size)}"><td><span class="file-name">${fileIcon(file)}<span title="${escapeHtml(file.name)}">${escapeHtml(displayFileName(file))}</span></span></td><td>${modifiedDate(file.modified)}</td><td title="${file.size === null?'':escapeHtml(`${file.size.toLocaleString('ko-KR')} 바이트`)}">${sizeText(file.size)}</td></tr>`).join('')}</tbody></table>`;
   let empty = '';
   if (!rows.length) {
-    const message = pane.loading ? '폴더를 불러오고 있어요' : pane.error && !pane.loaded ? '폴더를 열지 못했어요' : query && pane.loaded ? '일치하는 파일이 없어요' : pane.loaded ? '비어 있는 폴더예요' : '폴더 경로를 입력해 주세요';
+    const message = pane.loading ? '폴더를 불러오고 있어요' : pane.error && !pane.loaded ? '폴더를 열지 못했어요' : query && pane.loaded ? '일치하는 파일이 없어요' : pane.loaded ? (pane.entries.length?'표시할 항목이 없어요':'비어 있는 폴더예요') : '폴더 경로를 입력해 주세요';
     const detail = query && pane.loaded ? '다른 검색어를 입력해 보세요.' : pane.error && !pane.loaded ? '경로를 확인하거나 다시 시도해 주세요.' : '';
     empty = `<div class="empty-state">${icon(pane.error?'info':query?'search':'folder')}<p>${message}</p>${detail?`<small>${detail}</small>`:''}</div>`;
   }
   $('.file-scroll',panel).innerHTML = table + empty;
-  $('.panel-count',panel).textContent = pane.loaded ? (query ? `${rows.length} / ${pane.entries.length}개 항목` : `${pane.entries.length}개 항목`) : pane.loading ? '불러오는 중' : '폴더를 확인해 주세요';
-  $('.panel-footer-right',panel).innerHTML = pane.loaded ? `${icon('folder')}<span>${pane.entries.filter((file) => file.type==='folder').length}개 폴더${pane.skipped?` · ${pane.skipped}개 읽기 제외`:''}</span>` : '';
+  const availableCount = pane.entries.filter((file) => displayPreferences.showHidden || !file.hidden).length;
+  $('.panel-count',panel).textContent = pane.loaded ? (query ? `${rows.length} / ${availableCount}개 항목` : `${rows.length}개 항목`) : pane.loading ? '불러오는 중' : '폴더를 확인해 주세요';
+  $('.panel-footer-right',panel).innerHTML = pane.loaded ? `${icon('folder')}<span>${rows.filter((file) => file.type==='folder').length}개 폴더${pane.skipped?` · ${pane.skipped}개 읽기 제외`:''}</span>` : '';
   updateSelection();
 }
 function updateWorkspaceView() {
+  finishMarquee(true);
+  closeViewSettings();
   closeAddressMenu();
   closeContextMenu();
   const item = workspace();
@@ -790,6 +943,7 @@ function navigateHistory(direction,pane = activePane()) {
 }
 async function navigate(pane,requestedPath,options = {}) {
   if (!ready || !pane || typeof requestedPath !== 'string') return;
+  if (marquee?.pane === pane) finishMarquee(true);
   if (openAddressPane === pane) closeAddressMenu();
   if (contextMenuState?.pane === pane) closeContextMenu();
   const token = ++pane.requestToken;
@@ -901,6 +1055,7 @@ function openFile(pane,file) {
   else invokeOpen(file.path);
 }
 function showUnavailable(message,retry = false) {
+  finishMarquee(true);
   ready = false;
   renderSidebar();
   $('#connection-status').textContent = hasNativeBridge?'PC 연결 실패':'포터블 앱 전용';
@@ -910,6 +1065,7 @@ function showUnavailable(message,retry = false) {
   $('#global-search').disabled = true;
   $('#refresh-button').disabled = true;
   $('#file-info-button').disabled = true;
+  $('#view-settings-button').disabled = true;
   ['copy-button','cut-button','paste-button','transfer-button','add-favorite-button'].forEach((id) => {$(`#${id}`).disabled=true;});
   $$('button[data-layout]').forEach((button) => {button.disabled=true;});
 }
@@ -927,6 +1083,9 @@ async function bootstrap() {
     favorites = result.value.favorites || [];
     userFavorites = result.value.preferences?.favorites || [];
     recentPaths = result.value.preferences?.recentPaths || [];
+    displayPreferences = {showHidden:result.value.preferences?.showHidden === true,showExtensions:result.value.preferences?.showExtensions !== false};
+    $('#show-hidden').checked = displayPreferences.showHidden;
+    $('#show-extensions').checked = displayPreferences.showExtensions;
     drives = result.value.drives || [];
     startupWarning = [result.value.sessionWarning,result.value.preferencesWarning].filter(Boolean).join(' ');
     const session = isSessionValid(result.value.session) ? result.value.session : defaultSession();
@@ -941,6 +1100,7 @@ async function bootstrap() {
     renderSidebar();
     updateWorkspaceView();
     $('#global-search').disabled = false;
+    $('#view-settings-button').disabled = false;
     $('#connection-status').textContent = '이 PC에 연결됨';
     $('#storage-status').textContent = '폴더 위치 자동 저장';
     renderStorageMessage();
@@ -964,6 +1124,34 @@ $('#paste-icon').innerHTML = icon('paste');
 $('#transfer-icon').innerHTML = icon('transfer');
 $('#transfer-dialog-icon').innerHTML = icon('transfer');
 $('#trash-dialog-icon').innerHTML = icon('trash');
+$('#view-settings-button').addEventListener('click',() => {
+  const menu = $('#view-settings');
+  if (menu.matches(':popover-open')) {closeViewSettings(true);return;}
+  finishMarquee(true);
+  closeAddressMenu();closeContextMenu();closeTransferResult();
+  const rect = $('#view-settings-button').getBoundingClientRect();
+  menu.showPopover();
+  positionOverlay(menu,rect.right-menu.getBoundingClientRect().width,rect.bottom+6);
+  $('#view-settings-button').setAttribute('aria-expanded','true');
+  $('#show-hidden').focus({preventScroll:true});
+});
+$('#show-hidden').addEventListener('change',(event) => setDisplayPreference('showHidden',event.target.checked));
+$('#show-extensions').addEventListener('change',(event) => setDisplayPreference('showExtensions',event.target.checked));
+document.addEventListener('pointerdown',() => {marqueeGuard=false;},true);
+$('#panels').addEventListener('pointerdown',beginMarquee);
+document.addEventListener('pointermove',moveMarquee,{passive:false});
+document.addEventListener('pointerup',(event) => {
+  if (marquee?.pointerId!==event.pointerId || event.button!==0) return;
+  if (marquee.started) {marquee.x=event.clientX;marquee.y=event.clientY;paintMarquee(marquee);}
+  finishMarquee();
+});
+for (const type of ['pointercancel','lostpointercapture']) document.addEventListener(type,(event) => {
+  if (marquee?.pointerId===event.pointerId) finishMarquee(true);
+});
+document.addEventListener('keydown',(event) => {
+  if (event.key==='Escape' && marquee) {event.preventDefault();event.stopImmediatePropagation();finishMarquee(true);}
+},true);
+window.addEventListener('blur',() => finishMarquee(true));
 $$('button[data-layout]').forEach((button) => {
   button.innerHTML = icon({1:'one',2:'two',4:'four'}[button.dataset.layout]);
   button.addEventListener('click',() => setLayout(Number(button.dataset.layout)));
@@ -1011,6 +1199,7 @@ $('#panels').addEventListener('submit',(event) => {
   navigate(pane,$('.path-input',event.target).value);
 });
 $('#panels').addEventListener('click',(event) => {
+  if (marqueeGuard && event.detail>0) {event.preventDefault();return;}
   if (event.target.closest('#bootstrap-retry')) {bootstrap();return;}
   if (!ready) return;
   const pane = paneFromElement(event.target);
@@ -1050,6 +1239,7 @@ $('#panels').addEventListener('click',(event) => {
   if (action==='expand') setLayout(workspace().layout===1?4:1);
 });
 $('#panels').addEventListener('dblclick',(event) => {
+  if (marqueeGuard) {event.preventDefault();return;}
   const row = event.target.closest('[data-file]');
   if (!row) return;
   const pane = paneFromElement(row);
@@ -1094,6 +1284,7 @@ $('#file-context-menu').addEventListener('keydown',(event) => {
   if (event.key==='Escape' || event.key==='Tab') {event.preventDefault();event.stopPropagation();closeContextMenu(true);}
 });
 $('#panels').addEventListener('dragstart',(event) => {
+  if (marquee || marqueeGuard) {event.preventDefault();return;}
   const row = event.target.closest('[data-file]');
   const pane = row && paneFromElement(row);
   if (!pane || pane.loading || pane.error || transferPending) {event.preventDefault();return;}
@@ -1304,12 +1495,13 @@ $('#trash-confirm').addEventListener('click',async () => {
 $$('[data-close-dialog]').forEach((button) => button.addEventListener('click',() => button.closest('dialog').close()));
 $('#help-button').addEventListener('click',() => {
   $('#info-icon').innerHTML=icon('grid');
-  $('#info-title').textContent='pane 사용 안내';
-  $('#info-content').innerHTML='<p class="dialog-subtitle">여러 폴더를 나란히 보고, 마지막 위치에서 이어서 탐색하세요.</p><ul class="help-list"><li>주소창에 경로를 입력하고 <kbd>Enter</kbd>를 누르세요. <kbd>Ctrl + L</kbd>은 주소 선택, <kbd>Alt + ↓</kbd>는 경로 목록이에요.</li><li>즐겨찾기 옆 <strong>＋</strong>로 현재 폴더를 추가할 수 있어요. 열린 위치·분할·정렬·즐겨찾기는 다시 실행해도 유지돼요.</li><li><kbd>Ctrl</kbd> 또는 <kbd>Shift</kbd>와 함께 클릭하면 여러 항목을 선택해요. <kbd>Ctrl + A</kbd>로 모두 선택할 수 있어요.</li><li>파일과 빈 공간에서 <strong>오른쪽 클릭</strong>하면 Windows 탐색기 메뉴를 열어요. 키보드에서는 <kbd>Shift + F10</kbd> 또는 메뉴 키를 사용하세요.</li><li><kbd>Ctrl + C</kbd> 복사, <kbd>Ctrl + X</kbd> 잘라내기 후 다른 창이나 작업 공간에서 <kbd>Ctrl + V</kbd>로 붙여넣으세요.</li><li>선택한 항목을 다른 창이나 폴더에 끌어 놓으세요. 같은 드라이브는 이동, 다른 드라이브는 복사하며 <kbd>Ctrl</kbd>은 복사, <kbd>Shift</kbd>는 이동이에요. 같은 이름의 항목은 건너뜁니다.</li><li>Windows 탐색기의 파일도 끌어올 수 있어요. 다른 앱으로도 바로 끌어 놓으세요. 외부에서 들어오는 파일은 안전하게 복사해요.</li><li>두 번 클릭하거나 <kbd>Enter</kbd>를 누르면 폴더 또는 연결된 앱에서 파일을 열어요. <kbd>Alt + Enter</kbd>로 파일 정보를 확인하세요.</li><li><kbd>F2</kbd> 이름 변경, <kbd>Ctrl + Shift + N</kbd> 새 폴더, <kbd>Delete</kbd> 휴지통 이동을 지원해요. 삭제는 확인 후 실행합니다.</li><li><kbd>Alt + ↑</kbd> 상위 폴더, <kbd>Alt + ←</kbd> 뒤로, <kbd>Alt + →</kbd> 앞으로 이동할 수 있어요. 마우스의 뒤로·앞으로 버튼도 현재 창에 적용돼요. <kbd>F5</kbd> 새로고침, <kbd>Ctrl + K</kbd> 검색을 지원해요.</li></ul>';
+  $('#info-title').textContent='Quadpane 사용 안내';
+  $('#info-content').innerHTML='<p class="dialog-subtitle">여러 폴더를 나란히 보고, 마지막 위치에서 이어서 탐색하세요.</p><ul class="help-list"><li>주소창에 경로를 입력하고 <kbd>Enter</kbd>를 누르세요. <kbd>Ctrl + L</kbd>은 주소 선택, <kbd>Alt + ↓</kbd>는 경로 목록이에요.</li><li>즐겨찾기 옆 <strong>＋</strong>로 현재 폴더를 추가할 수 있어요. 열린 위치·분할·정렬·즐겨찾기는 다시 실행해도 유지돼요.</li><li>도구 모음의 <strong>보기</strong>에서 숨김 항목과 파일 확장자 표시를 켜거나 끄세요. 설정은 모든 창에 적용되고 다시 실행해도 유지돼요.</li><li>목록의 빈 공간이나 양옆 여백에서 드래그하면 여러 항목을 선택해요. <kbd>Ctrl</kbd>·<kbd>Shift</kbd> 드래그는 기존 선택에 추가하며, <kbd>Escape</kbd>로 선택을 취소해요.</li><li><kbd>Ctrl</kbd> 또는 <kbd>Shift</kbd>와 함께 클릭하면 여러 항목을 선택해요. <kbd>Ctrl + A</kbd>로 모두 선택할 수 있어요.</li><li>파일과 빈 공간에서 <strong>오른쪽 클릭</strong>하면 Windows 탐색기 메뉴를 열어요. 키보드에서는 <kbd>Shift + F10</kbd> 또는 메뉴 키를 사용하세요.</li><li><kbd>Ctrl + C</kbd> 복사, <kbd>Ctrl + X</kbd> 잘라내기 후 다른 창이나 작업 공간에서 <kbd>Ctrl + V</kbd>로 붙여넣으세요.</li><li>선택한 항목을 다른 창이나 폴더에 끌어 놓으세요. 같은 드라이브는 이동, 다른 드라이브는 복사하며 <kbd>Ctrl</kbd>은 복사, <kbd>Shift</kbd>는 이동이에요. 같은 이름의 항목은 건너뜁니다.</li><li>Windows 탐색기의 파일도 끌어올 수 있어요. 다른 앱으로도 바로 끌어 놓으세요. 외부에서 들어오는 파일은 안전하게 복사해요.</li><li>두 번 클릭하거나 <kbd>Enter</kbd>를 누르면 폴더 또는 연결된 앱에서 파일을 열어요. <kbd>Alt + Enter</kbd>로 파일 정보를 확인하세요.</li><li><kbd>F2</kbd> 이름 변경, <kbd>Ctrl + Shift + N</kbd> 새 폴더, <kbd>Delete</kbd> 휴지통 이동을 지원해요. 삭제는 확인 후 실행합니다.</li><li><kbd>Alt + ↑</kbd> 상위 폴더, <kbd>Alt + ←</kbd> 뒤로, <kbd>Alt + →</kbd> 앞으로 이동할 수 있어요. 마우스의 뒤로·앞으로 버튼도 현재 창에 적용돼요. <kbd>F5</kbd> 새로고침, <kbd>Ctrl + K</kbd> 검색을 지원해요.</li></ul>';
   $('#info-dialog').showModal();
 });
 document.addEventListener('keydown',(event) => {
   if (event.key==='Escape' && shellMenuPending) {event.preventDefault();bridge.cancelShell?.();return;}
+  if (event.key==='Escape' && $('#view-settings').matches(':popover-open')) {event.preventDefault();closeViewSettings(true);return;}
   if ($('dialog[open]') || !ready) return;
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key==='k') {event.preventDefault();closeAddressMenu();$('#global-search').focus();$('#global-search').select();return;}
@@ -1347,11 +1539,12 @@ document.addEventListener('keydown',(event) => {
   if (event.key==='Escape' && !editing && clipboard && !transferPending) {clipboard=null;clipboardRevision++;updateSelection();}
 });
 document.addEventListener('pointerdown',(event) => {
+  if (!event.target.closest('#view-settings,#view-settings-button')) closeViewSettings();
   if (openAddressPane && !event.target.closest('.address-menu,.path-dropdown-toggle')) closeAddressMenu();
   if (contextMenuState && !event.target.closest('#file-context-menu')) closeContextMenu();
   if ($('#transfer-result').matches(':popover-open') && !event.target.closest('#transfer-result,#operation-results-button')) closeTransferResult();
 });
-window.addEventListener('resize',() => {closeAddressMenu();closeContextMenu();closeTransferResult();clearDropFeedback();});
+window.addEventListener('resize',() => {finishMarquee(true);closeViewSettings();closeAddressMenu();closeContextMenu();closeTransferResult();clearDropFeedback();});
 window.addEventListener('focus',() => {
   if (!ready || transferPending) return;
   syncShellClipboard().catch(() => {});

@@ -1,8 +1,10 @@
 # Windows 포터블 실행
 
-`0.7.0`은 실제 Windows 파일·폴더 탐색과 복사·이동을 지원하는 x64 앱입니다. 기본 앱으로 파일 열기, 탐색기에서 보기, 이름 변경, 새 폴더, 확인 후 휴지통 이동과 파일 끌어 놓기를 제공합니다. 변경 사항은 [v0.7.0 릴리스 노트](docs/releases/v0.7.0.md), 배포 파일은 [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.7.0)에서 확인할 수 있습니다.
+`0.8.0`은 실제 Windows 파일·폴더 탐색과 복사·이동을 지원하는 x64 앱입니다. 기본 앱으로 파일 열기, 탐색기에서 보기, 이름 변경, 새 폴더, 확인 후 휴지통 이동과 파일 끌어 놓기를 제공합니다. 변경 사항은 [v0.8.0 릴리스 노트](docs/releases/v0.8.0.md), 배포 파일은 [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.8.0)에서 확인할 수 있습니다.
 
-소스 기준 갱신: 2026-10-01
+소스 기준 갱신: 2026-10-14
+
+v0.8.0에서는 **보기 → 숨김 항목 / 파일 확장자** 설정과 빈 공간의 드래그 다중 선택을 추가합니다. 이동 후 클립보드 오류를 실제 이동 결과와 구분하고, 상위·하위 항목 중복 요청, 대소문자만 바꾸는 이름 변경과 부분 이동의 오류 처리를 개선합니다.
 
 v0.7.0에서는 v0.5.1 대비 패널마다 앞으로 가기 버튼과 `Alt+→`를 추가하고, 마우스 측면 버튼 입력을 수정합니다. 마우스 뒤로·앞으로 가기 버튼과 `Alt+←/→`는 현재 활성 패널의 방문 기록을 이동합니다. 폴더 이름 변경·이동과 탐색이 겹치거나 읽기에 실패한 뒤 재시도할 때도 방문 기록을 유지하도록 개선합니다.
 
@@ -10,24 +12,28 @@ v0.5.1에서는 한글(HWP/HWPX/HWT)을 청록색 `한`, Word를 파란색 `W`, 
 
 ## 사용과 설정 이동
 
-기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.7.0-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 설치, 관리자 권한, 별도 Node.js가 필요하지 않습니다. Electron 런타임을 포함합니다.
+기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.8.0-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 설치, 관리자 권한, 별도 Node.js가 필요하지 않습니다. Electron 런타임을 포함합니다.
 
 실행 파일 옆 `quadpane-data/`에는 다음 정보가 저장됩니다.
 
 | 위치 | 내용 |
 | --- | --- |
 | `session.json` | 선택한 작업 공간, 패널별 전체 경로·정렬, 분할 상태·활성 패널 |
-| `preferences.json` | 사용자 즐겨찾기와 최근 경로 |
+| `preferences.json` | 사용자 즐겨찾기와 최근 경로, 숨김 항목·확장자 표시 설정 |
 | `session/` | 테마 선택을 포함한 브라우저 저장소와 캐시 |
 | `profile/`, `logs/`, `crashes/` | Electron 프로필, 로그, 크래시 파일 저장 경로 |
 
 앱을 종료한 뒤 EXE와 `quadpane-data/`를 함께 옮기면 설정을 이어서 사용합니다. 버전을 바꿀 때도 기존 `quadpane-data/`를 새 EXE 옆에 그대로 두면 열린 폴더·작업 공간·즐겨찾기·테마를 재사용합니다. 기존 `session.json`과 테마 저장소도 그대로 사용합니다. 경로는 절대 경로이므로 다른 PC에서 해당 폴더가 없으면 주소창에서 새 경로를 지정하거나 드라이브 연결 후 재시도합니다.
+
+기존 `preferences.json`에 표시 설정이 없으면 숨김 항목 끄기·파일 확장자 켜기를 기본값으로 적용합니다. 저장된 표시 설정이 있으면 그대로 유지합니다.
 
 설정 디렉터리에 쓸 수 없으면 안내 후 종료합니다. 실행 중 저장 실패와 읽을 수 없는 설정은 화면에 알립니다. 설정 경로를 AppData로 자동 변경하지 않습니다.
 
 NSIS portable 런처는 실행에 필요한 파일을 Windows 임시 폴더에 풉니다. 앱 설정은 임시 추출 폴더가 아닌 `PORTABLE_EXECUTABLE_DIR`를 기준으로 저장합니다. 현재 빌드는 코드 서명되지 않은 개발 버전입니다.
 
 ## 복사·이동 동작
+
+v0.8.0의 **보기 → 숨김 항목 / 파일 확장자** 설정과 빈 공간의 드래그 다중 선택은 모든 패널에서 사용할 수 있습니다. 기본값과 사용법, 이동 안정성 개선과 검증 범위는 [표시·선택·이동 개선 기록](docs/display-selection.md)에 정리합니다.
 
 패널과 작업 공간 사이에서 파일·폴더를 복사하거나 이동할 수 있습니다. 같은 이름의 대상 항목은 건너뛰고, 기존 폴더에 병합하지 않습니다. 링크·정션, 원본 폴더의 하위 대상, 드라이브·공유 루트 전체 작업은 거부합니다.
 
@@ -87,7 +93,11 @@ npm run build:portable
 
 ## 실행 검증
 
-v0.7.0 로컬 검증: JavaScript 31개 파일 문법 검사 통과, 자동 테스트 116개 통과·1개 건너뜀·실패 0개. GitHub 릴리스는 Windows에서 검사와 포터블 빌드를 통과한 뒤 게시됩니다.
+v0.8.0 로컬 검증: JavaScript 32개 파일 문법 검사 통과, 자동 테스트 145개 통과·실패 0개·건너뜀 0개. 다른 드라이브 간 파일·폴더 이동 검사도 포함합니다.
+
+출시 전 패키징 프리뷰에서 표시·선택·이동 10개, 셸 연동 4개, 탐색 9개 검사 그룹과 포터블 런처 3회 실행이 통과했습니다. 공식 0.8.0 EXE는 Windows CI에서 생성하며 SHA-256 체크섬을 함께 제공합니다. 프리뷰 검증은 공식 EXE 실행 검증과 구분합니다.
+
+프리뷰 파일명·해시와 과거 v0.7.0 검증 기록은 [표시·선택·이동 개선 기록](docs/display-selection.md)에 보존합니다.
 
 빌드 후 별도로 제공된 Playwright 의존성 경로를 지정합니다.
 
@@ -96,6 +106,7 @@ node scripts/verification/verify-real-files.cjs 'Playwright가 들어 있는 nod
 node scripts/verification/verify-workflows.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-explorer.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-navigation.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
+node scripts/verification/verify-display-selection.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-launcher.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 ```
 

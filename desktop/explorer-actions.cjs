@@ -3,7 +3,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
-const { mutationPath, nativeMove } = require('./file-operations.cjs');
+const { mutationPath, nativeMove, transferError } = require('./file-operations.cjs');
 
 const messages = {
   INVALID_ACTION: '작업할 항목을 확인해 주세요.',
@@ -31,9 +31,13 @@ const messages = {
 
 function failure(code, message) { return Object.assign(new Error(message || messages[code] || messages.ACTION_FAILED), { code }); }
 function actionError(error) {
-  if (error?.code === 'RENAME_RECOVERY_REQUIRED') return { code: error.code, message: error.message };
+  const { code: transferCode, message: transferMessage, ...diagnostics } = transferError(error);
+  if (error?.code === 'RENAME_RECOVERY_REQUIRED') return { code: error.code, message: error.message, ...diagnostics };
+  if (['ENETUNREACH', 'EHOSTUNREACH', 'ETIMEDOUT', 'ECONNRESET', 'ENODEV', 'ENXIO', 'EIO'].includes(transferCode)) {
+    return { code: transferCode, message: transferMessage, ...diagnostics };
+  }
   const code = Object.hasOwn(messages, error?.code) ? error.code : 'ACTION_FAILED';
-  return { code, message: messages[code] };
+  return { code, message: messages[code], ...diagnostics };
 }
 function key(value) { return value.toLowerCase(); }
 function within(child, parent) { return key(child).startsWith(`${key(parent).replace(/\\$/u, '')}\\`); }
@@ -140,11 +144,29 @@ function createExplorerActions(options) {
     } else {
       // File.Move cannot reliably rename only casing. Both hops refuse replacement.
       const temporary = path.win32.join(path.win32.dirname(source), `.pane-rename-${randomUUID()}`);
-      await move(source, temporary, mode);
+      const recovery = error => Object.assign(failure('RENAME_RECOVERY_REQUIRED',
+        `이름 변경 결과를 확인해야 합니다. 원래 경로 ${source}, 대상 ${target}, 임시 경로 ${temporary} 을 확인해 주세요.`),
+      { causeCode: error.code, nativeError: error.nativeError || error.message });
+      try { await move(source, temporary, mode); }
+      catch (error) {
+        // A failed helper response does not prove that its move never happened.
+        try { await unchanged(source, stat); }
+        catch { throw recovery(error); }
+        throw error;
+      }
       try { await move(temporary, target, mode); }
       catch (error) {
-        try { await move(temporary, source, mode); }
-        catch { throw failure('RENAME_RECOVERY_REQUIRED', `이름 변경을 마치지 못했습니다. 항목은 ${temporary} 에 보관되어 있습니다. 해당 경로와 원래 경로 ${source} 을 확인해 주세요.`); }
+        try {
+          // Roll back only our original entry, and only when the destination is absent.
+          await unchanged(temporary, stat);
+          let occupied = true;
+          try { await fs.lstat(target); } catch (probeError) {
+            if (probeError.code !== 'ENOENT') throw probeError;
+            occupied = false;
+          }
+          if (occupied) throw failure('EEXIST');
+          await move(temporary, source, mode);
+        } catch { throw recovery(error); }
         throw error;
       }
     }

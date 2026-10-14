@@ -12,6 +12,7 @@ const messages = {
   TRANSFER_BUSY: '다른 복사 또는 이동 작업이 진행 중입니다. 완료 후 다시 시도해 주세요.',
   EEXIST: '대상에 같은 이름의 항목이 있어 건너뛰었습니다. 기존 항목은 변경하지 않았습니다.',
   SAME_LOCATION: '원본과 대상 위치가 같아 건너뛰었습니다.',
+  PARENT_SELECTED: '함께 선택한 상위 폴더에 포함되어 따로 처리하지 않았습니다.',
   DESCENDANT_TARGET: '폴더를 자기 자신이나 그 하위 폴더로 복사하거나 이동할 수 없습니다.',
   LINK_NOT_SUPPORTED: '링크 또는 정션이 포함된 경로는 복사·이동할 수 없습니다. 실제 폴더를 선택해 주세요.',
   ROOT_NOT_SUPPORTED: '드라이브 또는 공유 폴더 전체는 이동할 수 없습니다. 내부 항목을 선택해 주세요.',
@@ -24,13 +25,24 @@ const messages = {
   EBUSY: '다른 프로그램이 사용 중인 항목입니다. 사용을 마친 뒤 다시 시도해 주세요.',
   ENOSPC: '대상 드라이브에 공간이 부족합니다.',
   ENAMETOOLONG: '경로가 너무 깁니다. 더 짧은 대상 경로를 선택해 주세요.',
+  ENETUNREACH: '네트워크 경로에 연결할 수 없습니다. 서버와 공유 폴더 연결을 확인해 주세요.',
+  EHOSTUNREACH: '네트워크 서버에 연결할 수 없습니다. 서버 연결을 확인해 주세요.',
+  ETIMEDOUT: '파일 작업 중 연결 시간이 초과되었습니다. 원본과 대상 위치를 확인해 주세요.',
+  ECONNRESET: '파일 작업 중 네트워크 연결이 끊어졌습니다. 원본과 대상 위치를 확인해 주세요.',
+  ENODEV: '드라이브를 사용할 수 없습니다. 연결 상태를 확인해 주세요.',
+  ENXIO: '드라이브를 사용할 수 없습니다. 연결 상태를 확인해 주세요.',
+  EIO: '드라이브를 읽거나 쓸 수 없습니다. 연결 상태를 확인해 주세요.',
   TRANSFER_FAILED: '복사 또는 이동을 완료하지 못했습니다. 경로, 권한과 드라이브 연결을 확인해 주세요.',
 };
 
 function failure(code, message) { return Object.assign(new Error(message || messages[code] || messages.TRANSFER_FAILED), { code }); }
 function transferError(error) {
   const code = Object.hasOwn(messages, error?.code) || ['PARTIAL_MOVE', 'COPY_CLEANUP_FAILED'].includes(error?.code) ? error.code : 'TRANSFER_FAILED';
-  return { code, message: ['PARTIAL_MOVE', 'COPY_CLEANUP_FAILED'].includes(code) ? error.message : messages[code] };
+  const result = { code, message: ['PARTIAL_MOVE', 'COPY_CLEANUP_FAILED'].includes(code) ? error.message : messages[code] };
+  for (const name of ['causeCode', 'win32', 'nativeError', 'exitCode', 'signal', 'errno', 'syscall']) {
+    if (error?.[name] !== undefined) result[name] = error[name];
+  }
+  return result;
 }
 function key(value) { return value.toLowerCase(); }
 function within(child, parent) { return key(child) === key(parent) || key(child).startsWith(`${key(parent).replace(/\\$/u, '')}\\`); }
@@ -102,7 +114,7 @@ try {
 } catch {
   $cause = $_.Exception
   while ($cause.InnerException) { $cause = $cause.InnerException }
-  [Console]::Out.Write((@{ok=$false;win32=($cause.HResult -band 65535)} | ConvertTo-Json -Compress))
+  [Console]::Out.Write((@{ok=$false;win32=($cause.HResult -band 65535);message=$cause.Message} | ConvertTo-Json -Compress))
 }
 `;
 
@@ -112,18 +124,30 @@ function nativeMove(source, destination, mode) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', moveScript], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '';
+    let stderr = '';
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => { output += chunk; });
-    child.stderr.resume();
-    child.on('error', reject);
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(0, 8192); });
+    child.on('error', error => reject(Object.assign(failure('TRANSFER_FAILED'), {
+      causeCode: error.code, nativeError: error.message,
+    })));
     child.stdin.on('error', () => {});
-    child.on('close', code => {
-      try {
-        const result = JSON.parse(output.replace(/^\uFEFF/u, ''));
-        if (code === 0 && result.ok) return resolve();
-        const mapped = { 2: 'ENOENT', 3: 'ENOENT', 5: 'EACCES', 17: 'EXDEV', 32: 'EBUSY', 33: 'EBUSY', 80: 'EEXIST', 112: 'ENOSPC', 183: 'EEXIST', 206: 'ENAMETOOLONG' }[result.win32];
-        reject(failure(mapped || 'TRANSFER_FAILED'));
-      } catch { reject(failure('TRANSFER_FAILED')); }
+    child.on('close', (code, signal) => {
+      let result;
+      try { result = JSON.parse(output.replace(/^\uFEFF/u, '')); } catch { /* Uncertain outcome; never repeat the move. */ }
+      if (code === 0 && result?.ok === true) return resolve();
+      const win32 = result?.ok === false && Number.isInteger(result.win32) ? result.win32 : undefined;
+      const mapped = {
+        2: 'ENOENT', 3: 'ENOENT', 5: 'EACCES', 17: 'EXDEV', 21: 'ENODEV', 32: 'EBUSY', 33: 'EBUSY',
+        53: 'ENETUNREACH', 55: 'ENODEV', 64: 'ENETUNREACH', 65: 'EACCES', 67: 'ENETUNREACH',
+        80: 'EEXIST', 112: 'ENOSPC', 121: 'ETIMEDOUT', 183: 'EEXIST', 206: 'ENAMETOOLONG',
+        1231: 'ENETUNREACH', 1232: 'EHOSTUNREACH',
+      }[win32];
+      reject(Object.assign(failure(mapped || 'TRANSFER_FAILED'), {
+        ...(win32 !== undefined ? { win32 } : {}), exitCode: code, signal,
+        nativeError: typeof result?.message === 'string' ? result.message : (stderr || output).slice(0, 8192),
+      }));
     });
     child.stdin.end(JSON.stringify({ source, destination, mode }), 'utf8');
   });
@@ -204,7 +228,13 @@ function createTransferService(options = {}) {
     if (!destinationStat.isDirectory()) throw failure('ENOTDIR');
     const canonicalDestination = await fs.realpath(destination);
     const result = { operation: request.operation, completed: [], skipped: [], failed: [] };
-    for (const source of request.sources) {
+    // Collapse the whole selection before any mutation, independent of selection order.
+    const selected = request.sources.filter(source => {
+      if (!request.sources.some(parent => key(parent) !== key(source) && within(source, parent))) return true;
+      result.skipped.push({ source, ...transferError(failure('PARENT_SELECTED')) });
+      return false;
+    });
+    for (const source of selected) {
       const target = path.win32.join(destination, path.win32.basename(source));
       let crossVolumeStarted = false;
       let moveStarted = false;
@@ -245,7 +275,10 @@ function createTransferService(options = {}) {
         result.completed.push({ source, destination: target });
       } catch (error) {
         if (moveStarted && (crossVolumeStarted || (error.code !== 'EEXIST' && await exists(target).catch(() => false)))) {
-          error = failure('PARTIAL_MOVE', `이동이 일부만 완료되었을 수 있습니다. 남은 원본 ${source} 과 대상 ${target} 을 확인해 주세요. 두 위치의 항목을 자동으로 삭제하지 않았습니다.`);
+          error = Object.assign(failure('PARTIAL_MOVE', `이동이 일부만 완료되었을 수 있습니다. 남은 원본 ${source} 과 대상 ${target} 을 확인해 주세요. 두 위치의 항목을 자동으로 삭제하지 않았습니다.`), {
+            ...Object.fromEntries(Object.entries(transferError(error)).filter(([name]) => !['code', 'message'].includes(name))),
+            causeCode: error.code,
+          });
         }
         const detail = { source, ...transferError(error) };
         (['EEXIST', 'SAME_LOCATION', 'DESCENDANT_TARGET', 'LINK_NOT_SUPPORTED', 'ROOT_NOT_SUPPORTED'].includes(detail.code) ? result.skipped : result.failed).push(detail);

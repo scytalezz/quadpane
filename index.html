@@ -33,7 +33,7 @@
 
     <main class="main-content">
       <header class="workspace-header"><div><div class="workspace-eyebrow">작업 공간</div><h1 id="workspace-title">메인 작업 공간</h1><p id="workspace-description">자주 쓰는 폴더를 나란히, 마지막 위치 그대로.</p></div><div class="layout-options"><span class="layout-label">화면 분할</span><div class="segmented-control" role="group" aria-label="화면 분할"><button data-layout="1" aria-label="1분할" title="1분할" aria-pressed="false" disabled></button><button data-layout="2" aria-label="2분할" title="2분할" aria-pressed="false" disabled></button><button data-layout="4" aria-label="4분할" title="4분할" aria-pressed="true" disabled></button></div></div></header>
-      <div class="toolbar"><div class="toolbar-actions"><button class="toolbar-button refresh-button" id="refresh-button" disabled><span id="refresh-icon"></span>새로고침</button><span class="toolbar-divider"></span><button class="toolbar-button" id="copy-button" title="선택한 항목 복사 (Ctrl + C)" disabled><span id="copy-icon"></span>복사</button><button class="toolbar-button" id="cut-button" title="선택한 항목 잘라내기 (Ctrl + X)" disabled><span id="cut-icon"></span>잘라내기</button><button class="toolbar-button" id="paste-button" title="현재 폴더에 붙여넣기 (Ctrl + V)" disabled><span id="paste-icon"></span>붙여넣기</button><button class="toolbar-button" id="transfer-button" title="다른 패널이나 작업 공간으로 복사 또는 이동" disabled><span id="transfer-icon"></span>다른 창으로</button><span class="toolbar-divider"></span><button class="toolbar-button" id="file-info-button" disabled><span id="file-info-icon"></span>파일 정보</button></div><div class="toolbar-context" id="toolbar-context"></div></div>
+      <div class="toolbar"><div class="toolbar-actions"><button class="toolbar-button refresh-button" id="refresh-button" disabled><span id="refresh-icon"></span>새로고침</button><span class="toolbar-divider"></span><button class="toolbar-button" id="copy-button" title="선택한 항목 복사 (Ctrl + C)" disabled><span id="copy-icon"></span>복사</button><button class="toolbar-button" id="cut-button" title="선택한 항목 잘라내기 (Ctrl + X)" disabled><span id="cut-icon"></span>잘라내기</button><button class="toolbar-button" id="paste-button" title="현재 폴더에 붙여넣기 (Ctrl + V)" disabled><span id="paste-icon"></span>붙여넣기</button><button class="toolbar-button" id="transfer-button" title="다른 패널이나 작업 공간으로 복사 또는 이동" disabled><span id="transfer-icon"></span>다른 창으로</button><span class="toolbar-divider"></span><button class="toolbar-button" id="file-info-button" disabled><span id="file-info-icon"></span>파일 정보</button></div><button type="button" class="toolbar-button view-settings-button" id="view-settings-button" aria-haspopup="dialog" aria-controls="view-settings" aria-expanded="false" disabled>보기</button><div class="toolbar-context" id="toolbar-context"></div></div>
       <div class="activity-bar" id="activity-strip"><p class="clipboard-status" id="clipboard-status" role="status"></p><p class="session-message" id="session-message" role="status" hidden></p><button type="button" class="activity-results-button" id="operation-results-button" aria-haspopup="dialog" aria-controls="transfer-result" hidden>작업 결과</button></div>
       <div class="panels" id="panels" data-layout="4"></div>
       <footer class="statusbar"><span class="storage-status" id="storage-status" role="status">폴더 위치 확인 중</span><span id="selection-status"></span><span class="status-hint">폴더 경로 입력<span class="status-key">Ctrl L</span></span></footer>
@@ -47,6 +47,12 @@
   <div class="context-menu" id="file-context-menu" role="menu" aria-label="파일 작업" popover="manual"></div>
   <section class="transfer-result" id="transfer-result" role="dialog" aria-label="파일 작업 결과" popover="manual" tabindex="-1"></section>
   <div class="drag-feedback" id="drag-feedback" role="status" popover="manual"></div>
+  <section class="view-settings" id="view-settings" role="dialog" aria-label="표시 설정" popover="manual">
+    <h2>표시 설정</h2>
+    <label><input type="checkbox" id="show-hidden">숨김 항목</label>
+    <label><input type="checkbox" id="show-extensions" checked>파일 확장자</label>
+    <p>모든 창에 적용되며 다시 실행해도 유지됩니다.</p>
+  </section>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
   <script type="module" src="./app.js"></script>
 </body>

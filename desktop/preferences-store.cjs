@@ -7,13 +7,15 @@ const { normalizePath } = require('./filesystem.cjs');
 const MAX_PREFERENCES_BYTES = 512 * 1024;
 
 function invalidPreferences() {
-  return Object.assign(new Error('즐겨찾기 설정 형식이 올바르지 않습니다.'), { code: 'INVALID_PREFERENCES' });
+  return Object.assign(new Error('즐겨찾기 및 표시 설정 형식이 올바르지 않습니다.'), { code: 'INVALID_PREFERENCES' });
 }
 
 function validatePreferences(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)
     || !Array.isArray(input.favorites) || input.favorites.length > 100
-    || !Array.isArray(input.recentPaths) || input.recentPaths.length > 30) throw invalidPreferences();
+    || !Array.isArray(input.recentPaths) || input.recentPaths.length > 30
+    || (Object.hasOwn(input, 'showHidden') && typeof input.showHidden !== 'boolean')
+    || (Object.hasOwn(input, 'showExtensions') && typeof input.showExtensions !== 'boolean')) throw invalidPreferences();
   const favorites = [];
   const recentPaths = [];
   const favoriteKeys = new Set();
@@ -36,7 +38,11 @@ function validatePreferences(input) {
       }
     }
   } catch { throw invalidPreferences(); }
-  const value = { favorites, recentPaths };
+  const value = {
+    favorites, recentPaths,
+    showHidden: Object.hasOwn(input, 'showHidden') ? input.showHidden : false,
+    showExtensions: Object.hasOwn(input, 'showExtensions') ? input.showExtensions : true,
+  };
   if (Buffer.byteLength(JSON.stringify(value), 'utf8') > MAX_PREFERENCES_BYTES) throw invalidPreferences();
   return value;
 }
@@ -50,8 +56,8 @@ function createPreferencesStore(directory) {
         return { preferences: validatePreferences(JSON.parse(fs.readFileSync(filename, 'utf8'))) };
       } catch (error) {
         return {
-          preferences: { favorites: [], recentPaths: [] },
-          ...(error.code === 'ENOENT' ? {} : { preferencesWarning: '즐겨찾기 설정을 읽을 수 없습니다. 새 즐겨찾기를 저장하면 설정을 다시 만듭니다.' }),
+          preferences: { favorites: [], recentPaths: [], showHidden: false, showExtensions: true },
+          ...(error.code === 'ENOENT' ? {} : { preferencesWarning: '즐겨찾기 및 표시 설정을 읽을 수 없습니다. 설정을 저장하면 다시 만듭니다.' }),
         };
       }
     },
@@ -70,7 +76,7 @@ function createPreferencesStore(directory) {
       } catch {
         if (descriptor !== undefined) { try { fs.closeSync(descriptor); } catch {} }
         try { fs.unlinkSync(temporary); } catch {}
-        throw Object.assign(new Error('즐겨찾기와 최근 경로를 저장하지 못했습니다. 설정 폴더의 쓰기 권한과 남은 공간을 확인해 주세요.'), { code: 'PREFERENCES_WRITE_FAILED' });
+        throw Object.assign(new Error('즐겨찾기, 최근 경로 및 표시 설정을 저장하지 못했습니다. 설정 폴더의 쓰기 권한과 남은 공간을 확인해 주세요.'), { code: 'PREFERENCES_WRITE_FAILED' });
       }
       return preferences;
     },

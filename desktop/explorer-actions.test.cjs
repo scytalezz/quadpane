@@ -120,6 +120,63 @@ test('failed case-only rename rolls back; failed rollback preserves a named reco
   assert.ok(actionError(recoveryError).message.includes(path.join(root, entries[0])));
 });
 
+for (const failingHop of [1, 2]) {
+  test(`case-only rename with a lost reply on hop ${failingHop} reports recovery without a blind rollback`, async () => {
+    const root = await fixture();
+    const source = path.join(root, 'case.txt');
+    const target = path.join(root, 'CASE.TXT');
+    await fs.writeFile(source, 'recoverable bytes');
+    let calls = 0;
+    const actions = service({ nativeMove: async (from, to) => {
+      calls++;
+      await fs.rename(from, to);
+      if (calls === failingHop) throw Object.assign(new Error('native reply lost'), { code: 'TRANSFER_FAILED' });
+    } });
+    await assert.rejects(actions.renameItem({ path: source, name: 'CASE.TXT' }), error => {
+      assert.equal(error.code, 'RENAME_RECOVERY_REQUIRED');
+      assert.ok(error.message.includes(source));
+      assert.ok(error.message.includes(target));
+      return true;
+    });
+    assert.equal(calls, failingHop);
+    const entries = await fs.readdir(root);
+    assert.equal(entries.length, 1);
+    if (failingHop === 1) assert.match(entries[0], /^\.pane-rename-/u);
+    else assert.equal(entries[0], 'CASE.TXT');
+    assert.equal(await fs.readFile(path.join(root, entries[0]), 'utf8'), 'recoverable bytes');
+  });
+}
+
+test('case-only rename refuses to roll back a replaced temporary entry', async () => {
+  const root = await fixture();
+  const source = path.join(root, 'case.txt');
+  await fs.writeFile(source, 'original data');
+  let calls = 0;
+  const actions = service({ nativeMove: async (from, to) => {
+    if (++calls === 2) {
+      await fs.rename(from, path.join(root, 'original-preserved.txt'));
+      await fs.writeFile(from, 'unrelated data', { flag: 'wx' });
+      throw Object.assign(new Error('entry replaced'), { code: 'EBUSY' });
+    }
+    await fs.rename(from, to);
+  } });
+  await assert.rejects(actions.renameItem({ path: source, name: 'CASE.TXT' }), { code: 'RENAME_RECOVERY_REQUIRED' });
+  assert.equal(calls, 2);
+  await missing(source);
+  assert.equal(await fs.readFile(path.join(root, 'original-preserved.txt'), 'utf8'), 'original data');
+  const temporary = (await fs.readdir(root)).find(name => name.startsWith('.pane-rename-'));
+  assert.equal(await fs.readFile(path.join(root, temporary), 'utf8'), 'unrelated data');
+});
+
+test('action errors retain network and native diagnostics', () => {
+  for (const code of ['ENETUNREACH', 'EHOSTUNREACH', 'ETIMEDOUT', 'ECONNRESET', 'ENODEV', 'EIO']) {
+    const detail = actionError(Object.assign(new Error('native failure'), { code, win32: 121, nativeError: 'native failure' }));
+    assert.equal(detail.code, code);
+    assert.equal(detail.win32, 121);
+    assert.equal(detail.nativeError, 'native failure');
+  }
+});
+
 test('trash validates the entire request before shell calls and collapses child selections', async () => {
   const root = await fixture();
   const folder = path.join(root, 'folder');

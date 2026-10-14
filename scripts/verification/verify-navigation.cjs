@@ -105,11 +105,12 @@ async function capture(name) {
 }
 (async () => {
   application = await _electron.launch({
-    executablePath: path.join(project, 'dist-portable', 'win-unpacked', 'Quadpane.exe'),
+    executablePath: path.resolve(process.argv[3] || path.join(project, 'dist-portable', 'win-unpacked', 'Quadpane.exe')),
     args: ['--pane-smoke-test'],
     env: { ...process.env, PORTABLE_EXECUTABLE_DIR: profile }, timeout: 30000,
   });
   page = await application.firstWindow();
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
   page.setDefaultTimeout(5000);
   page.on('pageerror', error => errors.push(error.message));
   cdp = await page.context().newCDPSession(page);

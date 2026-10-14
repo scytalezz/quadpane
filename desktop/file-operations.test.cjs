@@ -4,7 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { createTransferService, validateTransfer, copyFileRecord, nativeMove } = require('./file-operations.cjs');
+const { createTransferService, validateTransfer, copyFileRecord, nativeMove, transferError } = require('./file-operations.cjs');
 const base = path.join(__dirname, '..', '.checks', 'file-operation-tests');
 
 async function fixture() {
@@ -18,6 +18,44 @@ async function fixture() {
 }
 async function missing(filename) { await assert.rejects(fs.lstat(filename), { code: 'ENOENT' }); }
 
+async function withReadLock(filename, action) {
+  const { spawn } = require('node:child_process');
+  const executable = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  // Read access is allowed; deleting/renaming the open file is deliberately denied.
+  const script = String.raw`
+    $ErrorActionPreference = 'Stop'
+    $request = [Console]::In.ReadLine() | ConvertFrom-Json
+    $handle = [IO.File]::Open($request.path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try { [Console]::Out.WriteLine('ready'); [Console]::In.ReadLine() | Out-Null }
+    finally { $handle.Dispose() }
+  `;
+  const child = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+    windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const closed = new Promise(resolve => child.once('close', resolve));
+  child.stdin.on('error', () => {});
+  let output = '', errors = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', chunk => { errors += chunk; });
+  try {
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => { child.kill(); reject(new Error('Lock fixture did not start')); }, 10000);
+      child.once('error', error => { clearTimeout(timeout); reject(error); });
+      child.once('close', () => { clearTimeout(timeout); reject(new Error(`Lock fixture exited: ${errors}`)); });
+      child.stdout.on('data', chunk => {
+        output += chunk;
+        if (output.includes('ready')) { clearTimeout(timeout); resolve(); }
+      });
+      child.stdin.write(`${JSON.stringify({ path: filename })}\n`);
+    });
+    return await action();
+  } finally {
+    child.stdin.end('\n');
+    await closed;
+  }
+}
+
 test('validation rejects protocols, devices, relative paths, aliases and malformed requests', () => {
   for (const source of [null, 44, 'C:relative', 'https://x', '\\\\.\\C:', 'C:\\work\\name.', 'C:\\work\\NUL.txt']) {
     assert.throws(() => validateTransfer({ sources: [source], destination: 'C:\\output', operation: 'copy' }));
@@ -25,6 +63,134 @@ test('validation rejects protocols, devices, relative paths, aliases and malform
   assert.throws(() => validateTransfer({ sources: [], destination: 'C:\\output', operation: 'move' }));
   assert.throws(() => validateTransfer({ sources: ['C:\\work'], destination: 'C:\\output', operation: 'delete' }));
   assert.equal(validateTransfer({ sources: ['C:\\work', 'c:\\WORK'], destination: 'D:/output', operation: 'copy' }).sources.length, 1);
+});
+
+for (const operation of ['copy', 'move']) for (const childFirst of [false, true]) {
+  test(`${operation} collapses duplicate and ancestor selections with childFirst=${childFirst}`, async () => {
+    const f = await fixture();
+    const folder = path.join(f.source, 'folder');
+    const child = path.join(folder, 'nested', 'child.txt');
+    await fs.mkdir(path.dirname(child), { recursive: true });
+    await fs.writeFile(child, 'keep hierarchy');
+    const sources = childFirst ? [child, folder, folder] : [folder, folder, child];
+    const result = await createTransferService().transfer({ sources, destination: f.destination, operation });
+    assert.equal(result.failed.length, 0, JSON.stringify(result));
+    assert.equal(result.completed.length, 1, JSON.stringify(result));
+    assert.deepEqual(result.skipped.map(item => [item.source, item.code]), [[child, 'PARENT_SELECTED']]);
+    assert.equal(await fs.readFile(path.join(f.destination, 'folder', 'nested', 'child.txt'), 'utf8'), 'keep hierarchy');
+    assert.deepEqual(await fs.readdir(f.destination), ['folder']);
+    if (operation === 'copy') assert.equal(await fs.readFile(child, 'utf8'), 'keep hierarchy');
+    else await missing(folder);
+  });
+}
+
+test('a conflicting selected parent does not extract its selected child', async () => {
+  const f = await fixture();
+  const folder = path.join(f.source, 'folder');
+  const child = path.join(folder, 'child.txt');
+  await fs.mkdir(folder);
+  await fs.writeFile(child, 'keep inside source');
+  await fs.mkdir(path.join(f.destination, 'folder'));
+  const result = await createTransferService().transfer({ sources: [child, folder], destination: f.destination, operation: 'move' });
+  assert.equal(result.completed.length, 0, JSON.stringify(result));
+  assert.deepEqual(result.skipped.map(item => item.code).sort(), ['EEXIST', 'PARENT_SELECTED']);
+  assert.equal(await fs.readFile(child, 'utf8'), 'keep inside source');
+  assert.deepEqual(await fs.readdir(f.destination), ['folder']);
+});
+
+async function nativeResponse(output, exitCode = 0, stderr = '') {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const vm = require('node:vm');
+  const module = { exports: {} };
+  const spawn = () => {
+    const child = new EventEmitter();
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    process.nextTick(() => {
+      child.stdout.end(output);
+      child.stderr.end(stderr);
+      child.emit('close', exitCode, null);
+    });
+    return child;
+  };
+  vm.runInNewContext(await fs.readFile(path.join(__dirname, 'file-operations.cjs'), 'utf8'), {
+    module, process, require: name => name === 'node:child_process' ? { spawn } : require(name),
+  });
+  return module.exports.nativeMove('C:\\fixture\\source', 'C:\\fixture\\target', 'file');
+}
+
+test('native replies require an explicit boolean success and a successful process exit', async () => {
+  await nativeResponse('\uFEFF{"ok":true}\r\n');
+  for (const output of ['', 'not json', 'null', '[]', '{"ok":"false"}', '{"ok":1}', '{"ok":false}']) {
+    await assert.rejects(nativeResponse(output), { code: 'TRANSFER_FAILED' }, output);
+  }
+  await assert.rejects(nativeResponse('{"ok":true}', 1, 'native transport failed'), error => {
+    assert.equal(error.code, 'TRANSFER_FAILED');
+    assert.equal(error.exitCode, 1);
+    assert.match(error.nativeError, /native transport failed/);
+    return true;
+  });
+});
+
+test('native network errors and transfer diagnostics retain actionable causes', async () => {
+  for (const [win32, code] of [[53, 'ENETUNREACH'], [64, 'ENETUNREACH'], [67, 'ENETUNREACH'],
+    [121, 'ETIMEDOUT'], [1231, 'ENETUNREACH'], [1232, 'EHOSTUNREACH'], [32, 'EBUSY'], [5, 'EACCES']]) {
+    await assert.rejects(nativeResponse(JSON.stringify({ ok: false, win32, message: 'native cause' })), error => {
+      assert.equal(error.code, code);
+      const detail = transferError(error);
+      assert.equal(detail.code, code);
+      assert.equal(detail.win32, win32);
+      assert.equal(detail.nativeError, 'native cause');
+      return true;
+    });
+  }
+  for (const code of ['ENETUNREACH', 'EHOSTUNREACH', 'ETIMEDOUT', 'ECONNRESET', 'ENODEV', 'EIO']) {
+    assert.equal(transferError(Object.assign(new Error('fixture I/O failure'), { code })).code, code);
+  }
+});
+
+test('uncertain move results preserve both locations and the underlying cause without retry', async () => {
+  const f = await fixture();
+  const source = path.join(f.source, 'ambiguous.txt');
+  await fs.writeFile(source, 'preserved bytes');
+  let calls = 0;
+  const service = createTransferService({ nativeMove: async (from, to) => {
+    calls++;
+    await fs.rename(from, to);
+    throw Object.assign(new Error('reply lost'), { code: 'ETIMEDOUT', win32: 121 });
+  } });
+  const result = await service.transfer({ sources: [source], destination: f.destination, operation: 'move' });
+  assert.equal(calls, 1);
+  assert.equal(result.failed[0].code, 'PARTIAL_MOVE');
+  assert.equal(result.failed[0].causeCode, 'ETIMEDOUT');
+  assert.equal(result.failed[0].win32, 121);
+  assert.equal(await fs.readFile(path.join(f.destination, 'ambiguous.txt'), 'utf8'), 'preserved bytes');
+  await missing(source);
+});
+
+test('real Windows read lock allows copy, refuses same-volume move, and releases for a later explicit move', async () => {
+  const f = await fixture();
+  const source = path.join(f.source, 'locked.txt');
+  await fs.writeFile(source, 'locked source bytes');
+  const service = createTransferService();
+  await withReadLock(source, async () => {
+    const failed = await service.transfer({ sources: [source], destination: f.destination, operation: 'move' });
+    assert.equal(failed.failed[0].code, 'EBUSY', JSON.stringify(failed));
+    assert.equal(failed.failed[0].win32, 32);
+    assert.equal(await fs.readFile(source, 'utf8'), 'locked source bytes');
+    assert.deepEqual(await fs.readdir(f.destination), []);
+    const copied = await service.transfer({ sources: [source], destination: f.destination, operation: 'copy' });
+    assert.equal(copied.completed.length, 1, JSON.stringify(copied));
+    assert.equal(await fs.readFile(path.join(f.destination, 'locked.txt'), 'utf8'), 'locked source bytes');
+  });
+  const after = path.join(f.directory, 'after-lock');
+  await fs.mkdir(after);
+  const moved = await service.transfer({ sources: [source], destination: after, operation: 'move' });
+  assert.equal(moved.completed.length, 1, JSON.stringify(moved));
+  await missing(source);
+  assert.equal(await fs.readFile(path.join(after, 'locked.txt'), 'utf8'), 'locked source bytes');
 });
 
 test('real Unicode file copy preserves bytes and modification date without changing source', async () => {
@@ -217,20 +383,97 @@ test('cross-volume file and nested folder move preserve bytes, remove originals,
   assert.notEqual(path.parse(external).root.toLowerCase(), path.parse(f.directory).root.toLowerCase());
   await fs.mkdir(external, { recursive: true });
   const destination = await fs.mkdtemp(path.join(external, 'pane-transfer-test-'));
+  assert.notEqual((await fs.stat(destination)).dev, (await fs.stat(f.source)).dev, 'fixture must span physical volumes');
   const file = path.join(f.source, 'cross-volume.txt');
   const folder = path.join(f.source, 'cross-volume-folder');
   await fs.writeFile(file, 'cross-volume file');
   await fs.mkdir(path.join(folder, 'nested'), { recursive: true });
+  await fs.mkdir(path.join(folder, 'empty'));
   await fs.writeFile(path.join(folder, 'nested', '한글.txt'), 'cross-volume folder');
+  const copyDestination = path.join(destination, 'copies');
+  await fs.mkdir(copyDestination);
+  const copy = await createTransferService().transfer({ sources: [file, folder], destination: copyDestination, operation: 'copy' });
+  assert.equal(copy.completed.length, 2, JSON.stringify(copy));
+  assert.equal(await fs.readFile(path.join(copyDestination, 'cross-volume.txt'), 'utf8'), 'cross-volume file');
+  assert.equal(await fs.readFile(path.join(copyDestination, 'cross-volume-folder', 'nested', '한글.txt'), 'utf8'), 'cross-volume folder');
+  assert.deepEqual(await fs.readdir(path.join(copyDestination, 'cross-volume-folder', 'empty')), []);
   const result = await createTransferService().transfer({ sources: [file, folder], destination, operation: 'move' });
   assert.equal(result.completed.length, 2, JSON.stringify(result));
   await missing(file);
   await missing(folder);
   assert.equal(await fs.readFile(path.join(destination, 'cross-volume.txt'), 'utf8'), 'cross-volume file');
   assert.equal(await fs.readFile(path.join(destination, 'cross-volume-folder', 'nested', '한글.txt'), 'utf8'), 'cross-volume folder');
+  assert.deepEqual(await fs.readdir(path.join(destination, 'cross-volume-folder', 'empty')), []);
   await fs.writeFile(file, 'new source stays');
   const conflict = await createTransferService().transfer({ sources: [file], destination, operation: 'move' });
   assert.equal(conflict.skipped[0].code, 'EEXIST');
   assert.equal(await fs.readFile(file, 'utf8'), 'new source stays');
   assert.equal(await fs.readFile(path.join(destination, 'cross-volume.txt'), 'utf8'), 'cross-volume file');
+});
+
+test('real cross-volume move of a locked file preserves the source and reports the native lock', { skip: !process.env.PANE_TEST_CROSS_VOLUME_DIR }, async () => {
+  const f = await fixture();
+  const external = path.resolve(process.env.PANE_TEST_CROSS_VOLUME_DIR);
+  await fs.mkdir(external, { recursive: true });
+  const destination = await fs.mkdtemp(path.join(external, 'pane-locked-test-'));
+  assert.notEqual((await fs.stat(destination)).dev, (await fs.stat(f.source)).dev);
+  const source = path.join(f.source, 'locked-cross.txt');
+  await fs.writeFile(source, 'both copies must survive');
+  await withReadLock(source, async () => {
+    const result = await createTransferService().transfer({ sources: [source], destination, operation: 'move' });
+    assert.equal(result.failed[0].code, 'EBUSY', JSON.stringify(result));
+    assert.equal(result.failed[0].win32, 32);
+    assert.equal(result.completed.length, 0);
+    assert.equal(await fs.readFile(source, 'utf8'), 'both copies must survive');
+    await missing(path.join(destination, 'locked-cross.txt'));
+  });
+});
+
+test('real cross-volume tree move with a locked child retains partial progress without retrying', { skip: !process.env.PANE_TEST_CROSS_VOLUME_DIR }, async () => {
+  const f = await fixture();
+  const external = path.resolve(process.env.PANE_TEST_CROSS_VOLUME_DIR);
+  await fs.mkdir(external, { recursive: true });
+  const destination = await fs.mkdtemp(path.join(external, 'pane-partial-test-'));
+  assert.notEqual((await fs.stat(destination)).dev, (await fs.stat(f.source)).dev);
+  const folder = path.join(f.source, 'partial-tree');
+  await fs.mkdir(folder);
+  await fs.writeFile(path.join(folder, 'available.txt'), 'movable bytes');
+  const locked = path.join(folder, 'locked.txt');
+  await fs.writeFile(locked, 'locked bytes');
+  let calls = 0;
+  const service = createTransferService({ nativeMove: (...args) => { calls++; return nativeMove(...args); } });
+  await withReadLock(locked, async () => {
+    const result = await service.transfer({ sources: [folder], destination, operation: 'move' });
+    assert.equal(result.failed[0].code, 'PARTIAL_MOVE', JSON.stringify(result));
+    assert.equal(result.completed.length, 0);
+    assert.equal(calls, 1);
+    assert.equal(await fs.readFile(locked, 'utf8'), 'locked bytes');
+    assert.equal(await fs.readFile(path.join(destination, 'partial-tree', 'available.txt'), 'utf8'), 'movable bytes');
+    await missing(path.join(folder, 'available.txt'));
+  });
+});
+
+test('cross-volume tree move never overwrites a child created after destination reservation', { skip: !process.env.PANE_TEST_CROSS_VOLUME_DIR }, async () => {
+  const f = await fixture();
+  const external = path.resolve(process.env.PANE_TEST_CROSS_VOLUME_DIR);
+  await fs.mkdir(external, { recursive: true });
+  const destination = await fs.mkdtemp(path.join(external, 'pane-conflict-test-'));
+  assert.notEqual((await fs.stat(destination)).dev, (await fs.stat(f.source)).dev);
+  const folder = path.join(f.source, 'race-tree');
+  await fs.mkdir(folder);
+  await fs.writeFile(path.join(folder, 'conflict.txt'), 'source original');
+  await fs.writeFile(path.join(folder, 'movable.txt'), 'move safely');
+  let calls = 0;
+  const service = createTransferService({ nativeMove: async (from, to, mode) => {
+    calls++;
+    assert.equal(mode, 'tree');
+    await fs.writeFile(path.join(to, 'conflict.txt'), 'arrived later', { flag: 'wx' });
+    return nativeMove(from, to, mode);
+  } });
+  const result = await service.transfer({ sources: [folder], destination, operation: 'move' });
+  assert.equal(result.failed[0].code, 'PARTIAL_MOVE', JSON.stringify(result));
+  assert.equal(calls, 1);
+  assert.equal(await fs.readFile(path.join(folder, 'conflict.txt'), 'utf8'), 'source original');
+  assert.equal(await fs.readFile(path.join(destination, 'race-tree', 'conflict.txt'), 'utf8'), 'arrived later');
+  assert.equal(await fs.readFile(path.join(destination, 'race-tree', 'movable.txt'), 'utf8'), 'move safely');
 });

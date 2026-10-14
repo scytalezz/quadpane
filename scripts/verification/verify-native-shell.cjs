@@ -9,6 +9,7 @@ const { createRequire } = require('node:module');
 const dependencies = process.argv[2] ? createRequire(path.join(path.resolve(process.argv[2]), 'package.json')) : require;
 const { _electron } = dependencies('playwright');
 const project = path.resolve(__dirname, '..', '..');
+const executable = path.resolve(process.argv[3] || path.join(project, 'dist-portable', 'win-unpacked', 'Quadpane.exe'));
 const root = path.join(project, '.checks', 'native-integration', `run-${Date.now()}`);
 const source = path.join(root, '원본'), target = path.join(root, '대상');
 const profile = path.join(root, 'profile');
@@ -47,9 +48,10 @@ async function drop(name, modifiers = {}, native = true) {
   return effect;
 }
 (async () => {
-  application = await _electron.launch({ executablePath: path.join(project, 'dist-portable', 'win-unpacked', 'Quadpane.exe'),
+  application = await _electron.launch({ executablePath: executable,
     args: ['--pane-smoke-test'], env: { ...process.env, PORTABLE_EXECUTABLE_DIR: profile }, timeout: 30000 });
   page = await application.firstWindow(); page.setDefaultTimeout(15000);
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
   page.on('pageerror', error => errors.push(error.message));
   await row('alpha.txt').waitFor();
   await application.evaluate(({ ipcMain }) => {
@@ -90,7 +92,7 @@ async function drop(name, modifiers = {}, native = true) {
   assert.equal(fs.existsSync(path.join(source, 'shift.txt')), true);
   checks.push('Default drag dispatch without Alt; disk-backed File drops perform internal move, Ctrl copy and external copy even with Shift; feedback matches operation');
   assert.deepEqual(errors, []);
-  const resources = path.join(project, 'dist-portable', 'win-unpacked', 'resources');
+  const resources = path.join(path.dirname(executable), 'resources');
   const hash = filename => createHash('sha256').update(fs.readFileSync(filename)).digest('hex');
   const report = { passed: true, checks, errors, asarSHA256: hash(path.join(resources, 'app.asar')), helperSHA256: hash(path.join(resources, 'native', 'Quadpane.Shell.exe')),
     limits: 'Shell menu, drag loop and system clipboard IPC intercepted. No physical Explorer/browser drop, popup interaction, third-party invocation or property-sheet lifetime verified here.' };

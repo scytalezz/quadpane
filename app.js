@@ -122,8 +122,10 @@ let contextMenuState = null;
 let nameDraft = null;
 let trashDraft = null;
 let internalDrag = null;
+let nativeDragPending = null;
 let dropTarget = null;
 let shellMenuPending = false;
+let shellCancelPending = null;
 let marquee = null;
 let marqueeGuard = false;
 let toastTimer;
@@ -459,7 +461,7 @@ function closeContextMenu(restoreFocus = false) {
   if (restoreFocus && state) focusPaneContent(state.pane,state.fileId);
 }
 async function openContextMenu(pane,row,x,y,extended = false) {
-  if (!ready || !pane) return;
+  if (!ready || !pane || nativeDragPending || shellMenuPending || shellCancelPending) return;
   closeAddressMenu();
   closeTransferResult();
   closeContextMenu();
@@ -481,7 +483,10 @@ async function openContextMenu(pane,row,x,y,extended = false) {
     updateSelection();
     try {
       const result = await bridge.shellMenu({parent:pane.path,paths:files.map((file) => file.path),x,y,extended});
-      if (!result?.ok) throw new Error(result?.error?.message || 'Windows 메뉴를 열지 못했어요.');
+      if (!result?.ok) {
+        if (result?.error?.code==='SHELL_CANCELLED') return;
+        throw new Error(result?.error?.message || 'Windows 메뉴를 열지 못했어요.');
+      }
       // Rename requires an IShellView host. Use our existing dialog and path remapping.
       if (result.value?.action==='rename' && files.length===1) {
         transferPending = false;
@@ -620,6 +625,41 @@ function clearDragState() {
   clearDropFeedback();
   internalDrag = null;
   $$('.drag-source').forEach((row) => row.classList.remove('drag-source'));
+}
+async function startNativeDrag(sources,pane) {
+  clearDragState();
+  const drag = {sources,originPaneId:pane.id,native:true};
+  // A drop clears the visual/source state before the native IPC can return.
+  // Keep its reservation separate, without blocking the in-app file transfer.
+  nativeDragPending = internalDrag = drag;
+  try {
+    const result = await bridge.beginNativeDrag(sources);
+    if (nativeDragPending!==drag) return;
+    if (!result?.ok && result?.error?.code!=='SHELL_CANCELLED') showToast(result?.error?.message || '파일을 창 밖으로 끌지 못했어요.');
+    else if (result?.value?.sourceRetained) showToast('대상 앱이 원본 삭제를 요청했지만 원본을 보존했어요. 대상에서 복사 결과를 확인해 주세요.');
+  } catch (error) {
+    if (nativeDragPending===drag && error?.code!=='SHELL_CANCELLED') showToast(error.message || '파일을 창 밖으로 끌지 못했어요.');
+  } finally {
+    if (nativeDragPending===drag) {
+      nativeDragPending = null;
+      if (internalDrag===drag) clearDragState();
+      if (ready && !transferPending) refreshAffected(() => true);
+    }
+  }
+}
+async function cancelShellInteraction() {
+  if (shellCancelPending || typeof bridge.cancelShell!=='function') return;
+  const cancellation = {};
+  shellCancelPending = cancellation;
+  try {
+    const result = await bridge.cancelShell();
+    if (!result?.ok) showToast(result?.error?.message || 'Windows 작업을 취소하지 못했어요.');
+  } catch (error) {showToast(error.message || 'Windows 작업을 취소하지 못했어요.');}
+  finally {
+    // Only the original drag/menu response releases its reservation. A cancel
+    // acknowledgement can arrive first, or fail while that operation is live.
+    if (shellCancelPending===cancellation) shellCancelPending = null;
+  }
 }
 function marqueeViewport(state) {
   const rect = state.scroll.getBoundingClientRect();
@@ -1284,7 +1324,7 @@ $('#file-context-menu').addEventListener('keydown',(event) => {
   if (event.key==='Escape' || event.key==='Tab') {event.preventDefault();event.stopPropagation();closeContextMenu(true);}
 });
 $('#panels').addEventListener('dragstart',(event) => {
-  if (marquee || marqueeGuard) {event.preventDefault();return;}
+  if (marquee || marqueeGuard || nativeDragPending || shellMenuPending || shellCancelPending) {event.preventDefault();return;}
   const row = event.target.closest('[data-file]');
   const pane = row && paneFromElement(row);
   if (!pane || pane.loading || pane.error || transferPending) {event.preventDefault();return;}
@@ -1295,13 +1335,7 @@ $('#panels').addEventListener('dragstart',(event) => {
   closeAddressMenu();closeContextMenu();closeTransferResult();
   if (typeof bridge.beginNativeDrag==='function') {
     event.preventDefault();
-    clearDragState();
-    internalDrag = {sources,originPaneId:pane.id,native:true};
-    Promise.resolve(bridge.beginNativeDrag(sources)).then((result) => {
-      if (!result?.ok) showToast(result?.error?.message || '파일을 창 밖으로 끌지 못했어요.');
-      else if (result.value?.sourceRetained) showToast('대상 앱이 원본 삭제를 요청했지만 원본을 보존했어요. 대상에서 복사 결과를 확인해 주세요.');
-    }).catch((error) => showToast(error.message || '파일을 창 밖으로 끌지 못했어요.'))
-      .finally(() => {clearDragState();if (ready && !transferPending) refreshAffected(() => true);});
+    startNativeDrag(sources,pane);
     return;
   }
   internalDrag = {sources,originPaneId:pane.id,token:crypto.randomUUID()};
@@ -1500,7 +1534,11 @@ $('#help-button').addEventListener('click',() => {
   $('#info-dialog').showModal();
 });
 document.addEventListener('keydown',(event) => {
-  if (event.key==='Escape' && shellMenuPending) {event.preventDefault();bridge.cancelShell?.();return;}
+  if (event.key!=='Escape' || !(nativeDragPending || shellMenuPending || shellCancelPending)) return;
+  event.preventDefault();event.stopImmediatePropagation();
+  cancelShellInteraction();
+},true);
+document.addEventListener('keydown',(event) => {
   if (event.key==='Escape' && $('#view-settings').matches(':popover-open')) {event.preventDefault();closeViewSettings(true);return;}
   if ($('dialog[open]') || !ready) return;
   const key = event.key.toLowerCase();

@@ -58,7 +58,17 @@ const transferService = createTransferService();
 const mutations = createMutationCoordinator();
 const explorerActions = createExplorerActions({ shell, mutations });
 let quitAfterTransfer = false;
+let shellShutdown;
+let quitAfterShell = false;
+let shellShutdownComplete = false;
 const explorerChannels = new Set(['pane:open-path', 'pane:reveal-path', 'pane:trash-items', 'pane:rename-item', 'pane:create-folder', 'pane:begin-native-drag']);
+
+function closeShellMenus() {
+  // Share teardown across renderer destruction, window closure and app quit.
+  // The service bounds graceful clipboard flushing and owns final exit cleanup.
+  if (!shellShutdown) shellShutdown = Promise.resolve().then(() => shellMenus.close()).catch(() => {});
+  return shellShutdown;
+}
 
 function applicationErrorResult(error, channel) {
   const shellResult = shellErrorResult(error, channel);
@@ -148,6 +158,15 @@ function createWindow() {
   });
   mainWindow = window;
   window.setMenu(null);
+  // A renderer can disappear without BrowserWindow's normal close path. Retire
+  // its helper immediately so a native drag cannot keep global mouse capture.
+  const abandonShell = () => { if (mainWindow === window) shellMenus.cancel(); };
+  window.webContents.on('render-process-gone', abandonShell);
+  window.webContents.on('destroyed', () => {
+    if (mainWindow !== window) return;
+    if (shellMenus.pending) shellMenus.cancel();
+    closeShellMenus();
+  });
   const sendPaneNavigation = direction => {
     if (mainWindow !== window
       || window.isDestroyed() || window.webContents.isDestroyed()) return;
@@ -186,7 +205,11 @@ function createWindow() {
       pending.finally(() => { quitAfterTransfer = false; app.quit(); }).catch(() => {});
     }
   });
-  window.on('closed', () => { mainWindow = undefined; });
+  window.on('closed', () => {
+    if (mainWindow !== window) return;
+    closeShellMenus();
+    mainWindow = undefined;
+  });
   window.loadFile(indexPath).catch(error => {
     dialog.showErrorBox('Quadpane 화면을 열 수 없습니다', error.message);
     app.quit();
@@ -208,14 +231,21 @@ if (!app.requestSingleInstanceLock()) {
     createWindow();
   });
   app.on('window-all-closed', () => app.quit());
-  app.on('will-quit', () => shellMenus.close());
+  app.on('will-quit', closeShellMenus);
   app.on('before-quit', event => {
     if (shellMenus.pending) shellMenus.cancel();
-    if (!mutations.pending) return;
-    event.preventDefault();
-    if (!quitAfterTransfer) {
-      quitAfterTransfer = true;
-      mutations.pending.finally(() => { quitAfterTransfer = false; app.quit(); }).catch(() => {});
+    if (mutations.pending) {
+      event.preventDefault();
+      if (!quitAfterTransfer) {
+        quitAfterTransfer = true;
+        mutations.pending.finally(() => { quitAfterTransfer = false; app.quit(); }).catch(() => {});
+      }
+      return;
     }
+    if (shellShutdownComplete) return;
+    event.preventDefault();
+    if (quitAfterShell) return;
+    quitAfterShell = true;
+    closeShellMenus().then(() => { shellShutdownComplete = true; app.quit(); });
   });
 }

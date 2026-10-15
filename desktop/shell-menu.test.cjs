@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
 const { validateMenuRequest, createShellMenuService } = require('./shell-menu.cjs');
@@ -53,7 +53,7 @@ test('cancel releases a hung shell request; late events cannot reject a replacem
   service.cancel();
 });
 
-test('real x64 shell COM enumerates file, folder, multiple selection and background menus on an STA', { timeout: 60000 }, () => {
+test('real x64 shell COM enumerates file, folder, multiple selection and background menus on an STA', { timeout: 60000 }, async t => {
   const build = spawnSync(process.execPath, [path.join(__dirname, 'build-shell-helper.cjs')], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
   assert.equal(build.status, 0, build.stdout + build.stderr);
   const requests = [[first], [child], [first, second], []].map((paths, index) => ({ id: String(index), mode: 'inspect', parent: folder, paths }));
@@ -61,8 +61,24 @@ test('real x64 shell COM enumerates file, folder, multiple selection and backgro
   requests.splice(2, 0, { id: 'invalid', mode: 'inspect', parent: folder, paths: [path.join(folder, 'absent')] });
   requests.push({ id: 'drag', mode: 'inspectDrag', parent: folder, paths: [first, child] });
   requests.push({ id: 'clipboard', mode: 'completePaste', sequence: 0, completed: [] });
-  const result = spawnSync(path.join(__dirname, 'native', 'bin', 'Quadpane.Shell.exe'), [], {
-    input: requests.map(request => JSON.stringify(request)).join('\n') + '\n', encoding: 'utf8', windowsHide: true, timeout: 30000,
+  // Match the live parent protocol: EOF means the parent disconnected, so keep
+  // stdin open until every response arrives instead of racing the EOF watchdog.
+  const result = await new Promise(resolve => {
+    const worker = spawn(path.join(__dirname, 'native', 'bin', 'Quadpane.Shell.exe'), [], {
+      windowsHide: true, timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    t.after(() => { if (worker.exitCode === null && !worker.killed) worker.kill(); });
+    let stdout = '', stderr = '', error;
+    worker.stdout.setEncoding('utf8'); worker.stderr.setEncoding('utf8');
+    worker.stdout.on('data', chunk => {
+      stdout += chunk;
+      if ((stdout.match(/\n/gu) || []).length >= requests.length && !worker.stdin.writableEnded) worker.stdin.end();
+    });
+    worker.stderr.on('data', chunk => { stderr += chunk; });
+    worker.stdin.on('error', value => { error = value; });
+    worker.on('error', value => { error = value; });
+    worker.once('close', status => resolve({ status, stdout, stderr, error }));
+    worker.stdin.write(requests.map(request => JSON.stringify(request)).join('\n') + '\n');
   });
   assert.equal(result.status, 0, `${result.error || ''}\n${result.stderr}`);
   const responses = result.stdout.trim().split(/\r?\n/u).map(line => JSON.parse(line.replace(/^\uFEFF/u, '')));

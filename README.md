@@ -2,8 +2,8 @@
 
 여러 폴더를 한 화면에 나란히 열고, 패널 사이에서 파일을 복사·이동하는 Windows 멀티패널 파일 탐색기입니다. [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir)의 멀티패널 개념을 현대적인 UI와 안전한 파일 작업으로 개선하는 것을 목표로 합니다.
 
-- 현재 버전: `0.8.0` (Windows x64 포터블 · 소스 기준 2026-10-14)
-- [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.8.0) · [v0.8.0 릴리스 노트](docs/releases/v0.8.0.md)
+- 현재 버전: `0.8.1` (Windows x64 포터블 · 소스 기준 2026-10-15)
+- [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.8.1) · [v0.8.1 릴리스 노트](docs/releases/v0.8.1.md)
 - 설치·관리자 권한·별도 Node.js 불필요 — 실행 파일 하나로 동작
 
 > **English** — *Quadpane* is a multi-pane file explorer for Windows, inspired by Q-Dir. It opens up to four folder panes side by side with copy/move between panes, favorites, two workspaces, drag & drop with Windows Explorer, and full session restore. Ships as a single portable x64 executable built on Electron. Built-in transfers skip conflicts and the Delete key uses the Recycle Bin. Windows shell commands follow Windows and extension behavior. Detailed docs below are in Korean.
@@ -29,9 +29,18 @@
 
 ## 포터블 실행
 
-기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.8.0-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 열린 폴더·작업 공간·즐겨찾기·테마와 표시 설정은 실행 파일 옆 `quadpane-data/`에 저장되며, 기존 설정 폴더를 그대로 재사용할 수 있습니다. EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
+기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.8.1-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 열린 폴더·작업 공간·즐겨찾기·테마와 표시 설정은 실행 파일 옆 `quadpane-data/`에 저장되며, 기존 설정 폴더를 그대로 재사용할 수 있습니다. EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
 
-## v0.8.0 주요 변경
+## v0.8.1 주요 변경
+
+- v0.8.0에서 마우스 버튼을 놓은 뒤에도 네이티브 도우미가 마우스 입력을 붙잡아 Windows 탐색기 드래그까지 막는 문제를 수정합니다.
+- 드래그 시작 전 실제 버튼 상태를 확인하고, 버튼 해제 입력이 누락되면 드롭 확정 전에 취소합니다. 앱과 연결이 끊긴 도우미의 종료 처리도 보강합니다.
+- 메뉴·드래그 중복 요청을 차단하고 `Escape` 취소 후 입력 복구를 개선합니다. 요청 검증·준비와 클립보드 응답 대기에 시간 제한을 적용합니다.
+- 실제 드롭이나 셸 명령이 실행되기 시작하면 오래 걸린다는 이유로 자동 중단하지 않습니다.
+
+확인한 현상과 복구 기록은 [셸 메뉴·드래그 복구 문서](docs/shell-recovery.md)를 참고하세요.
+
+## v0.8.0에서 추가된 기능
 
 - 도구 모음의 **보기**에서 **숨김 항목**, **파일 확장자** 표시를 각각 켜거나 끕니다. 기본값은 숨김 항목 숨기기·확장자 표시이며, 모든 패널에 적용하고 재실행 후에도 유지합니다.
 - 숨김 여부는 Windows 파일 속성으로 판단합니다. 확장자를 숨겨도 실제 파일명·아이콘·검색·파일 작업 경로는 유지합니다.
@@ -81,9 +90,15 @@ npm run desktop
 
 ## 검증
 
+v0.8.1 로컬 검증: JavaScript 34개 파일 문법 검사와 자동 테스트 201개 통과(실패·건너뜀 없음). 도우미 응답·종료, 드래그 취소·경쟁 상황 및 다른 드라이브 간 파일 이동을 확인했습니다.
+
+v0.8.1 배포 후보 EXE에서 셸 연동 7개, 표시·선택·이동 10개, 탐색 9개 검사 그룹과 포터블 런처 3회 실행이 통과했습니다. 최초 실행·재실행·EXE와 설정 폴더 이동 후 복원 및 정상 종료를 확인했습니다. 셸 메뉴·드래그·클립보드 IPC는 테스트용 응답으로 대체하므로 물리적 외부 앱 드롭 검증과 구분합니다.
+
+아래는 과거 v0.8.0 검증 기록이며, v0.8.1의 테스트·빌드 통과를 의미하지 않습니다. 이번 수정의 확인 내용은 [셸 메뉴·드래그 복구 문서](docs/shell-recovery.md)에 기록합니다.
+
 v0.8.0 로컬 검증: JavaScript 32개 파일 문법 검사 통과, 자동 테스트 145개 통과·실패 0개·건너뜀 0개. 다른 드라이브 간 파일·폴더 이동 검사도 포함합니다.
 
-출시 전 패키징 프리뷰에서 표시·선택·이동 10개, 셸 연동 4개, 탐색 9개 검사 그룹과 포터블 런처 3회 실행이 통과했습니다. 공식 0.8.0 EXE는 Windows CI에서 생성하며 SHA-256 체크섬을 함께 제공합니다. 프리뷰 검증은 공식 EXE 실행 검증과 구분합니다.
+v0.8.0 출시 전 패키징 프리뷰에서 표시·선택·이동 10개, 셸 연동 4개, 탐색 9개 검사 그룹과 포터블 런처 3회 실행이 통과했습니다. 프리뷰 검증은 공식 EXE 실행 검증과 구분합니다.
 
 프리뷰 파일명·해시와 과거 v0.7.0 검증 기록은 [표시·선택·이동 개선 기록](docs/display-selection.md)에 보존합니다.
 
@@ -110,7 +125,9 @@ node scripts/verification/verify-launcher.cjs 'Playwright가 들어 있는 node_
 | [PORTABLE.md](PORTABLE.md) | 포터블 실행, 설정 저장 구조, 개발·빌드 상세 |
 | [VERIFICATION.md](VERIFICATION.md) | 실행 검증 결과와 검증 범위·한계 |
 | [Windows 셸 통합](docs/windows-shell.md) | 클래식 메뉴·드래그·클립보드 동작과 검증 범위 |
+| [셸 메뉴·드래그 복구](docs/shell-recovery.md) | v0.8.0 캡처 잔류 현상과 v0.8.1 수정·검증 기록 |
 | [표시·선택·이동 개선](docs/display-selection.md) | v0.8.0 표시 설정·드래그 선택·이동 안정성 개선과 프리뷰 검증 이력 |
+| [v0.8.1 릴리스 노트](docs/releases/v0.8.1.md) | 네이티브 드래그의 캡처 잔류와 메뉴·드래그 복구 개선 |
 | [v0.8.0 릴리스 노트](docs/releases/v0.8.0.md) | 숨김 항목·확장자 표시, 드래그 다중 선택과 파일 이동 안정성 개선 |
 | [v0.7.0 릴리스 노트](docs/releases/v0.7.0.md) | 패널별 앞으로 가기, 마우스 측면 버튼 수정과 방문 기록 안정성 개선 |
 | [v0.6.0 개발 기록](docs/releases/v0.6.0.md) | 미배포 개발 버전의 변경 사항과 검증 기록 |

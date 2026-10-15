@@ -3,6 +3,7 @@
 // can outlive InvokeCommand. No command line is constructed from file names.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -44,8 +45,161 @@ public interface IDropSource {
 }
 [ComVisible(true), ClassInterface(ClassInterfaceType.None)]
 public class DropSource : IDropSource {
-    public int QueryContinueDrag(bool escape, uint keys) { return escape ? 0x40101 : (keys & 1) == 0 ? 0x40100 : 0; }
+    const int Drop = 0x40100, Cancel = 0x40101;
+    enum Phase { Dragging, Cancelled, Committing, Finished }
+    readonly object gate = new object();
+    readonly Func<bool> buttonDown, disconnected;
+    readonly Action committing;
+    Phase phase;
+    bool armed;
+    long releasedSince = -1;
+    public DropSource() : this(NativeDragInput.PrimaryDown, () => false, () => {}) { }
+    internal DropSource(Func<bool> buttonDown, Func<bool> disconnected, Action committing) {
+        this.buttonDown = buttonDown; this.disconnected = disconnected; this.committing = committing;
+    }
+    internal bool CanStart() {
+        lock (gate) {
+            if (phase != Phase.Dragging) return false;
+            if (!disconnected() && buttonDown()) { armed = true; return true; }
+            phase = Phase.Cancelled;
+            return false;
+        }
+    }
+    public int QueryContinueDrag(bool escape, uint keys) {
+        lock (gate) {
+            if (phase == Phase.Committing) return Drop;
+            if (phase != Phase.Dragging) return Cancel;
+            if (escape || disconnected()) { phase = Phase.Cancelled; return Cancel; }
+            if ((keys & 1) == 0) {
+                // An unarmed source must never manufacture a drop. Preflight
+                // can arm it: OLE need not call us before the first release.
+                if (!armed) { phase = Phase.Cancelled; return Cancel; }
+                phase = Phase.Committing; // Disable the watchdog BEFORE Drop can run.
+            } else {
+                // OLE can retain stale MK_LBUTTON after the physical release.
+                // Returning DROP here could commit to an unintended target.
+                if (!buttonDown()) { phase = Phase.Cancelled; return Cancel; }
+                armed = true;
+                return 0;
+            }
+        }
+        committing();
+        return Drop;
+    }
     public int GiveFeedback(uint effect) { return 0x40102; }
+    internal void PollRelease(long milliseconds, bool down, bool captured, Action exit) {
+        lock (gate) {
+            if (phase == Phase.Committing || phase == Phase.Finished) return;
+            if (down || !captured) { releasedSince = -1; return; }
+            if (releasedSince < 0) releasedSince = milliseconds;
+            if (milliseconds - releasedSince >= 1000) phase = Phase.Cancelled;
+            // Let a responsive OLE loop observe CANCEL first. If no input is
+            // delivered, retire only this helper while it still owns capture.
+            // The shared gate excludes a concurrent transition to committing.
+            if (milliseconds - releasedSince >= 2000) exit();
+        }
+    }
+    internal void WatchRelease(Func<bool> captured, Action exit) {
+        var clock = Stopwatch.StartNew();
+        var watcher = new Thread(() => {
+            while (true) {
+                lock (gate) { if (phase == Phase.Committing || phase == Phase.Finished) return; }
+                PollRelease(clock.ElapsedMilliseconds, buttonDown(), captured(), exit);
+                Thread.Sleep(100);
+            }
+        });
+        watcher.IsBackground = true;
+        watcher.Start();
+    }
+    internal void Finish() { lock (gate) { phase = Phase.Finished; } }
+}
+static class NativeDragInput {
+    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
+    [DllImport("user32.dll")] static extern int GetSystemMetrics(int metric);
+    [DllImport("kernel32.dll")] internal static extern uint GetCurrentThreadId();
+    [StructLayout(LayoutKind.Sequential)] struct GuiThreadInfo {
+        public uint size, flags;
+        public IntPtr active, focus, capture, menuOwner, moveSize, caret;
+        public int left, top, right, bottom;
+    }
+    [DllImport("user32.dll")] static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
+    internal static bool PrimaryDown(Func<int, short> read, bool swapped) {
+        // GetAsyncKeyState reports physical buttons, unlike OLE's logical
+        // MK_LBUTTON. Only the high bit is current state; the low bit is shared.
+        return (read(swapped ? 2 : 1) & 0x8000) != 0;
+    }
+    internal static bool PrimaryDown() { return PrimaryDown(GetAsyncKeyState, GetSystemMetrics(23) != 0); }
+    internal static bool HasCapture(uint thread) {
+        var info = new GuiThreadInfo { size = (uint)Marshal.SizeOf(typeof(GuiThreadInfo)) };
+        return GetGUIThreadInfo(thread, ref info) && info.capture != IntPtr.Zero;
+    }
+}
+
+// One reader keeps observing pipe closure even while the STA is blocked. A
+// single drain owns the queue across nested OLE/menu loops, preventing reentry.
+sealed class ShellLifetime {
+    readonly object gate = new object();
+    readonly Queue<string> requests = new Queue<string>();
+    readonly Action<Action> post;
+    readonly Action<string> process;
+    readonly Action shutdown;
+    readonly Action exit;
+    bool scheduled;
+    volatile bool disconnected;
+    internal bool IsDisconnected { get { return disconnected; } }
+    internal ShellLifetime(Action<Action> post, Action<string> process, Action shutdown, Action exit) {
+        this.post = post; this.process = process; this.shutdown = shutdown; this.exit = exit;
+    }
+    internal void Read(Func<string> readLine) {
+        try {
+            string line;
+            while ((line = readLine()) != null) {
+                bool schedule;
+                lock (gate) {
+                    if (disconnected) return;
+                    requests.Enqueue(line);
+                    schedule = !scheduled;
+                    scheduled = true;
+                }
+                if (schedule) post(Drain);
+            }
+        } catch (IOException) {
+        } catch (ObjectDisposedException) {
+        } catch (InvalidOperationException) {
+            // The UI handle may already be shutting down.
+        } finally { Disconnect(); }
+    }
+    internal void Disconnect() {
+        bool schedule;
+        lock (gate) {
+            if (disconnected) return;
+            disconnected = true;
+            schedule = !scheduled;
+            scheduled = true;
+        }
+        // A dedicated thread does not depend on the STA, stdout or thread pool.
+        // Also bounds a hung clipboard flush or form disposal during shutdown.
+        var watchdog = new Thread(() => { Thread.Sleep(2000); exit(); });
+        watchdog.IsBackground = true;
+        watchdog.Start();
+        if (schedule) {
+            try { post(Drain); } catch (InvalidOperationException) { }
+        }
+    }
+    void Drain() {
+        while (true) {
+            string line = null;
+            bool closing;
+            lock (gate) {
+                closing = disconnected;
+                if (requests.Count != 0) line = requests.Dequeue();
+                else scheduled = false;
+            }
+            if (line == null) { if (closing) shutdown(); return; }
+            try { process(line); }
+            catch (IOException) { Disconnect(); return; }
+        }
+    }
 }
 [ComImport, Guid("43826d1e-e718-42ee-bc55-a1e261c37bfe"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IShellItem {
@@ -72,6 +226,7 @@ class Request {
     public string operation { get; set; }
     public uint sequence { get; set; }
     public string[] completed { get; set; }
+    public bool reportProgress { get; set; }
 }
 class ShellHost : Form {
     [DllImport("shell32.dll", CharSet=CharSet.Unicode, PreserveSig=false)] static extern void SHParseDisplayName(string name, IntPtr context, out IntPtr pidl, uint mask, out uint attributes);
@@ -109,6 +264,14 @@ class ShellHost : Form {
     System.Runtime.InteropServices.ComTypes.IDataObject clipboardSnapshot;
     string[] clipboardPaths;
     uint clipboardSequence;
+    ShellLifetime lifetime;
+    bool ParentDisconnected { get { return lifetime != null && lifetime.IsDisconnected; } }
+    static object CancelledDrag() { return new { action = "cancel", effect = 0u, sourceRetained = false }; }
+    void Phase(Request request, string phase) {
+        if (!request.reportProgress) return;
+        Console.WriteLine(json.Serialize(new { id = request.id, phase }));
+        Console.Out.Flush();
+    }
 
     IntPtr ClipboardMemory(byte[] bytes) {
         IntPtr memory = GlobalAlloc(0x42, new UIntPtr((uint)bytes.Length));
@@ -207,6 +370,10 @@ class ShellHost : Form {
         } finally { Marshal.FreeCoTaskMem(buffer); }
     }
     object ShowShellMenu(Request request) {
+        // Validate the gesture before potentially slow filesystem/COM work, and
+        // again immediately before entering OLE. Never start UI after EOF.
+        if (request.mode == "drag" && (ParentDisconnected || !NativeDragInput.PrimaryDown())) return CancelledDrag();
+        if (request.mode == "show" && ParentDisconnected) return new { action = "cancel" };
         if (request.mode == "readClipboard") {
             return ReadClipboardSnapshot();
         }
@@ -268,10 +435,21 @@ class ShellHost : Form {
                     try {
                         if (request.mode == "inspectDrag") return new { paths = new DataObject(data).GetData(DataFormats.FileDrop), allowedEffects = 3 };
                         uint effect;
+                        var source = new DropSource(NativeDragInput.PrimaryDown, () => ParentDisconnected,
+                            () => Phase(request, "committing"));
+                        if (!source.CanStart()) return CancelledDrag();
+                        Phase(request, "interactive");
                         // Shell data object negotiates optimized moves with Explorer.
                         // Never delete sources ourselves: the target owns the transfer.
-                        int result = DoDragDrop((System.Runtime.InteropServices.ComTypes.IDataObject)data, new DropSource(), 3, out effect);
+                        int result;
+                        uint thread = NativeDragInput.GetCurrentThreadId();
+                        try {
+                            source.WatchRelease(() => NativeDragInput.HasCapture(thread), () => Environment.Exit(1));
+                            if (!source.CanStart()) return CancelledDrag();
+                            result = DoDragDrop((System.Runtime.InteropServices.ComTypes.IDataObject)data, source, 3, out effect);
+                        } finally { source.Finish(); }
                         Marshal.ThrowExceptionForHR(result);
+                        if (result == 0x40101) return CancelledDrag();
                         var performedStream = new DataObject(data).GetData("Performed DropEffect") as MemoryStream;
                         var performedBytes = performedStream == null ? null : performedStream.ToArray();
                         bool sourceRetained = effect == 2 && performedBytes != null && performedBytes.Length >= 4
@@ -300,9 +478,11 @@ class ShellHost : Form {
                 return new { entries, contextMenu2 = menu2 != null, contextMenu3 = menu3 != null };
             }
             if (request.mode != "show") throw new ArgumentException("Unknown mode");
+            if (ParentDisconnected) return new { action = "cancel" };
             IntPtr owner = new IntPtr(Int64.Parse(request.owner));
             SetWindowLongPtr(Handle, -8, owner); // GWLP_HWNDPARENT: owned top-level window
             Location = new System.Drawing.Point(request.x, request.y);
+            Phase(request, "interactive");
             Show(); SetForegroundWindow(Handle);
             uint command = TrackPopupMenuEx(popup, 0x100 | 0x2, request.x, request.y, Handle, IntPtr.Zero);
             PostMessage(Handle, 0, IntPtr.Zero, IntPtr.Zero);
@@ -314,6 +494,8 @@ class ShellHost : Form {
             info.mask = 0x4000 | 0x20000000 | 0x100; // UNICODE, PTINVOKE, NOASYNC
             info.owner = Handle; info.verb = info.verbW = new IntPtr(command - 1);
             info.show = 1; info.point = new Point { x = request.x, y = request.y };
+            if (ParentDisconnected) return new { action = "cancel" };
+            Phase(request, "committing");
             Marshal.ThrowExceptionForHR(current.InvokeCommand(ref info));
             return new { action = "invoked", verb };
         } finally {
@@ -345,16 +527,11 @@ class ShellHost : Form {
         Application.OleRequired();
         using (var host = new ShellHost()) {
             IntPtr handle = host.Handle;
-            var reader = new Thread(() => {
-                string line;
-                while ((line = Console.ReadLine()) != null) {
-                    string captured = line;
-                    host.Invoke(new Action(() => host.Process(captured)));
-                }
-                host.BeginInvoke(new Action(() => { OleFlushClipboard(); Application.ExitThread(); }));
-            });
+            host.lifetime = new ShellLifetime(action => host.BeginInvoke(action), host.Process,
+                () => { OleFlushClipboard(); Application.ExitThread(); }, () => Environment.Exit(0));
+            var reader = new Thread(() => host.lifetime.Read(Console.ReadLine));
             reader.IsBackground = true;
-            host.BeginInvoke(new Action(() => reader.Start()));
+            reader.Start();
             Application.Run();
         }
     }

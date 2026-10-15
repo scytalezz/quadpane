@@ -18,13 +18,20 @@ function shellErrorResult(error, channel) {
     message = `${operation} 작업을 지금 실행할 수 없습니다. 진행 중인 메뉴·드래그 또는 파일 작업을 마친 뒤 다시 시도해 주세요.`;
   } else if (code === 'SHELL_CANCELLED') {
     message = `${operation} 작업이 취소되었습니다.`;
+  } else if (code === 'SHELL_CLOSED') {
+    message = `${operation} 작업을 실행할 수 없습니다. Windows 셸 서비스가 종료되었습니다.`;
+  } else if (code === 'SHELL_TIMEOUT') {
+    message = error?.outcomeUncertain === false
+      ? `${operation} 요청의 대기 시간이 초과되어 실행 전에 취소되었습니다. 자동으로 다시 시도하지 않습니다.`
+      : `${operation} 응답 대기 시간이 초과되었습니다. 작업이 일부 또는 전부 실행되었을 수 있어 결과를 확인할 수 없습니다. 파일과 대상 폴더를 확인해 주세요. 자동으로 다시 시도하지 않습니다.`;
   } else if (code === 'SHELL_HELPER_EXITED') {
     message = `${operation} 처리 중 Windows 셸 도우미가 종료되었습니다. 다시 시도해 주세요.`;
   }
   const result = { code, message, details: error?.message || String(error) };
   // Keep diagnostics separate from the operation-specific user message. In
   // particular, helper launch/COM errors do not imply folder access permissions.
-  for (const key of ['nativeError', 'hresult', 'errno', 'syscall', 'path', 'exitCode', 'signal']) {
+  for (const key of ['nativeError', 'hresult', 'errno', 'syscall', 'path', 'exitCode', 'signal',
+    'requestId', 'mode', 'phase', 'timeoutMs', 'outcomeUncertain', 'retryable']) {
     if (error?.[key] !== undefined) result[key] = error[key];
   }
   return { ok: false, error: result };

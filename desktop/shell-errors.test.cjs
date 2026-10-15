@@ -83,3 +83,27 @@ test('shell mapper is explicitly included in packaged app', () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
   assert.ok(pkg.build.files.includes('desktop/shell-errors.cjs'));
 });
+
+test('timeout IPC errors retain uncertainty and never advise blindly repeating a file mutation', async () => {
+  for (const outcomeUncertain of [true, false]) {
+    const details = { code: 'SHELL_TIMEOUT', requestId: '7', mode: 'drag', phase: 'worker',
+      timeoutMs: 30000, outcomeUncertain, retryable: false };
+    const ipc = handlersFor(Object.assign(new Error('Windows shell worker exceeded 30000ms'), details));
+    for (const [channel, operation] of Object.entries(channels)) {
+      const result = await ipc.invoke(channel, requestFor(channel));
+      for (const [key, value] of Object.entries(details)) assert.equal(result.error[key], value, key);
+      assert.match(result.error.message, new RegExp(operation));
+      assert.match(result.error.message, /초과/);
+      assert.match(result.error.message, /자동으로 다시 시도하지 않습니다/);
+      assert.doesNotMatch(result.error.message, /다시 시도해 주세요/);
+      if (outcomeUncertain) assert.match(result.error.message, /일부 또는 전부 실행되었을 수 있어 결과를 확인할 수 없습니다/);
+      else assert.match(result.error.message, /실행 전에 취소/);
+    }
+  }
+});
+
+test('a timeout without certainty metadata conservatively reports an unknown outcome', () => {
+  const { shellErrorResult } = require('./shell-errors.cjs');
+  const result = shellErrorResult({ code: 'SHELL_TIMEOUT', message: 'expired' }, 'pane:shell-menu');
+  assert.match(result.error.message, /결과를 확인할 수 없습니다/);
+});

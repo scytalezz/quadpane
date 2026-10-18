@@ -520,7 +520,34 @@ class ShellHost : Form {
         }
         Console.Out.Flush();
     }
-    [STAThread] static void Main() {
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, ExactSpelling=true)]
+    static extern uint GetFileAttributesW(string filename);
+    static int ReadHiddenAttributes() {
+        try {
+            Console.InputEncoding = new UTF8Encoding(false, true);
+            Console.OutputEncoding = new UTF8Encoding(false);
+            // Directory batches can exceed the serializer's default 2 MiB limit.
+            var serializer = new JavaScriptSerializer { MaxJsonLength = Int32.MaxValue };
+            var paths = serializer.DeserializeObject(Console.In.ReadToEnd()) as object[];
+            if (paths == null) return 1;
+            var hidden = new bool?[paths.Length];
+            for (int index = 0; index < paths.Length; index++) {
+                var filename = paths[index] as string;
+                if (filename == null) return 1;
+                // Avoid native NUL truncation; invalid/unreadable paths have no metadata.
+                uint attributes = filename.IndexOf('\0') < 0 ? GetFileAttributesW(filename) : UInt32.MaxValue;
+                hidden[index] = attributes == UInt32.MaxValue ? (bool?)null : (attributes & 2) != 0;
+            }
+            Console.WriteLine(serializer.Serialize(hidden));
+            return 0;
+        } catch (Exception) { return 1; }
+    }
+    [STAThread] static void Main(string[] args) {
+        // This one-shot metadata mode must never initialize the interactive shell host.
+        if (args.Length > 0 && args[0] == "--read-hidden-attributes") {
+            Environment.ExitCode = args.Length == 1 ? ReadHiddenAttributes() : 1;
+            return;
+        }
         Console.InputEncoding = new UTF8Encoding(false); Console.OutputEncoding = new UTF8Encoding(false);
         SetProcessDpiAwarenessContext(new IntPtr(-4));
         Application.EnableVisualStyles();

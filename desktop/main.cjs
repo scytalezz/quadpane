@@ -2,13 +2,14 @@ const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, screen } 
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
-const { discoverDrives, getFavorites, listDirectory, errorResult } = require('./filesystem.cjs');
+const { discoverDrives, getFavorites, listDirectory, closeDirectoryReader, errorResult } = require('./filesystem.cjs');
 const { createSessionStore } = require('./session-store.cjs');
 const { createPreferencesStore } = require('./preferences-store.cjs');
 const { createTransferService, transferError } = require('./file-operations.cjs');
 const { createExplorerActions, createMutationCoordinator, actionError, validatePaths } = require('./explorer-actions.cjs');
 const { createShellMenuService } = require('./shell-menu.cjs');
 const { shellErrorResult } = require('./shell-errors.cjs');
+const { createTaskbarIntegration } = require('./taskbar.cjs');
 const shellMenus = createShellMenuService(app.isPackaged
   ? path.join(process.resourcesPath, 'native', 'Quadpane.Shell.exe')
   : path.join(__dirname, 'native', 'bin', 'Quadpane.Shell.exe'));
@@ -97,7 +98,7 @@ function registerFileAccess() {
     ...sessionStore.load(),
     ...preferencesStore.load(),
   }));
-  handle('pane:list-directory', directory => listDirectory(directory));
+  handle('pane:list-directory', (directory, options) => listDirectory(directory, { accurate: options?.accurate === true }));
   handle('pane:save-session', session => sessionStore.save(session));
   handle('pane:save-preferences', preferences => preferencesStore.save(preferences));
   handle('pane:transfer', request => mutations.run(() => transferService.transfer(request)));
@@ -138,6 +139,12 @@ function registerFileAccess() {
 }
 
 function createWindow() {
+  const taskbar = app.isPackaged && process.platform === 'win32' ? createTaskbarIntegration({
+    isPackaged: app.isPackaged, platform: process.platform, env: process.env,
+    execPath: process.execPath, portableDirectory, dataDirectory,
+    iconSource: path.join(__dirname, 'quadpane.ico'), applicationId, shell,
+    smokeTest: app.commandLine.hasSwitch('pane-smoke-test'),
+  }) : null;
   const window = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -146,7 +153,7 @@ function createWindow() {
     show: false,
     title: 'Quadpane — 파일 탐색기',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#11151c' : '#f4f6f8',
-    icon: path.join(__dirname, 'quadpane.ico'),
+    icon: taskbar?.windowIcon || path.join(__dirname, 'quadpane.ico'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       nodeIntegration: false,
@@ -156,6 +163,7 @@ function createWindow() {
       spellcheck: false,
     },
   });
+  taskbar?.apply(window);
   mainWindow = window;
   window.setMenu(null);
   // A renderer can disappear without BrowserWindow's normal close path. Retire
@@ -232,6 +240,7 @@ if (!app.requestSingleInstanceLock()) {
   });
   app.on('window-all-closed', () => app.quit());
   app.on('will-quit', closeShellMenus);
+  app.on('will-quit', closeDirectoryReader);
   app.on('before-quit', event => {
     if (shellMenus.pending) shellMenus.cancel();
     if (mutations.pending) {

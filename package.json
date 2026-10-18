@@ -1,6 +1,6 @@
 {
   "name": "quadpane",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "private": true,
   "description": "Quadpane — a multi-pane file explorer for Windows, inspired by Q-Dir.",
   "license": "MIT",
@@ -16,6 +16,7 @@
   "scripts": {
     "start": "node server.mjs",
     "check": "node scripts/check.cjs",
+    "pretest": "npm run build:native",
     "test": "node --test desktop/*.test.cjs",
     "build:native": "node desktop/build-shell-helper.cjs",
     "predesktop": "npm run build:native",
@@ -34,8 +35,10 @@
       "app.js",
       "theme.js",
       "desktop/main.cjs",
+      "desktop/taskbar.cjs",
       "desktop/preload.cjs",
       "desktop/filesystem.cjs",
+      "desktop/directory-service.cjs",
       "desktop/session-store.cjs",
       "desktop/preferences-store.cjs",
       "desktop/file-operations.cjs",
@@ -50,6 +53,10 @@
       {
         "from": "desktop/native/bin/Quadpane.Shell.exe",
         "to": "native/Quadpane.Shell.exe"
+      },
+      {
+        "from": "desktop/native/bin/Quadpane.Directory.exe",
+        "to": "native/Quadpane.Directory.exe"
       }
     ],
     "win": {

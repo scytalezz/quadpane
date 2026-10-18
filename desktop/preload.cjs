@@ -16,7 +16,7 @@ contextBridge.exposeInMainWorld('pane', Object.freeze({
     return () => { ipcRenderer.removeListener('pane:navigate-forward', listener); };
   },
   bootstrap: () => ipcRenderer.invoke('pane:bootstrap'),
-  listDirectory: path => ipcRenderer.invoke('pane:list-directory', path),
+  listDirectory: (path, options) => ipcRenderer.invoke('pane:list-directory', path, { accurate: options?.accurate === true }),
   saveSession: session => ipcRenderer.invoke('pane:save-session', session),
   savePreferences: preferences => ipcRenderer.invoke('pane:save-preferences', preferences),
   transfer: request => ipcRenderer.invoke('pane:transfer', request),

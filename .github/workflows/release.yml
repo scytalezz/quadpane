@@ -22,6 +22,10 @@ jobs:
         with:
           node-version: '24'
           package-manager-cache: false
+      - name: Verify tag matches package version
+        run: |
+          $releaseVersion = (Get-Content -LiteralPath package.json -Raw | ConvertFrom-Json).version
+          if ($env:GITHUB_REF_NAME -ne "v$releaseVersion") { throw 'Release tag does not match package.json version' }
       - run: npm ci
       - run: npm run check
       - name: Windows filesystem tests

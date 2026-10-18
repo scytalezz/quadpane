@@ -5,6 +5,7 @@ const net = require('node:net');
 const { createHash } = require('node:crypto');
 const { spawn, execFile } = require('node:child_process');
 const { createRequire } = require('node:module');
+const { fileURLToPath } = require('node:url');
 
 const project = path.resolve(__dirname, '..', '..');
 const requireDependencies = process.argv[2]
@@ -15,8 +16,8 @@ const version = require('../../package.json').version;
 const sourceExecutable = path.resolve(process.argv[3] || path.join(project, 'dist-portable', `quadpane-${version}-portable-x64.exe`));
 assert.ok(fs.existsSync(sourceExecutable), `Portable EXE missing: ${sourceExecutable}`);
 const runRoot = path.join(project, '.checks', 'portable-launch', `run-${Date.now()}`);
-const originalRoot = path.join(runRoot, 'original');
-const movedRoot = path.join(runRoot, 'moved');
+const originalRoot = path.join(runRoot, 'original 한글 경로');
+const movedRoot = path.join(runRoot, 'moved 한글 경로');
 fs.mkdirSync(originalRoot, { recursive: true });
 const fixtureRoot = path.join(runRoot, '실제 파일');
 const folderPaths = ['작업 A', '작업 B', '작업 C', '작업 D'].map(name => path.join(fixtureRoot, name));
@@ -30,7 +31,27 @@ const originalExecutable = path.join(originalRoot, path.basename(sourceExecutabl
 fs.copyFileSync(sourceExecutable, originalExecutable);
 const sha256 = createHash('sha256').update(fs.readFileSync(sourceExecutable)).digest('hex');
 const observations = [];
+const pinnedDirectory = path.join(process.env.APPDATA, 'Microsoft/Internet Explorer/Quick Launch/User Pinned/TaskBar');
+function snapshotPinnedLinks() {
+  if (!fs.existsSync(pinnedDirectory)) return {};
+  return Object.fromEntries(fs.readdirSync(pinnedDirectory).filter(name => name.toLowerCase().endsWith('.lnk')).sort().map(name => [
+    name, createHash('sha256').update(fs.readFileSync(path.join(pinnedDirectory, name))).digest('hex'),
+  ]));
+}
+const pinnedLinksBefore = snapshotPinnedLinks();
 let active;
+
+// Node 25.8.1's native cpSync aborts on this Windows Unicode profile fixture
+// (0xC0000409). Copy regular fixture entries without that native tree walker.
+function copyFixtureDirectory(source, destination) {
+  fs.mkdirSync(destination, { recursive: true });
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    const from = path.join(source, entry.name), to = path.join(destination, entry.name);
+    if (entry.isDirectory()) copyFixtureDirectory(from, to);
+    else if (entry.isFile()) fs.copyFileSync(from, to);
+    else throw new Error(`Unexpected non-regular fixture entry: ${from}`);
+  }
+}
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 async function reservePort() {
@@ -66,6 +87,8 @@ async function killOwnProcess() {
 }
 
 async function launchAndCheck(executable, expectedTheme) {
+  const persistentIcon = path.join(path.dirname(executable), 'quadpane-data', 'taskbar', 'quadpane.ico');
+  const iconMtimeBefore = fs.existsSync(persistentIcon) ? fs.statSync(persistentIcon).mtimeMs : null;
   const port = await reservePort();
   const environment = { ...process.env };
   for (const key of ['PORTABLE_EXECUTABLE_DIR', 'PORTABLE_EXECUTABLE_FILE', 'PORTABLE_EXECUTABLE_APP_FILENAME', 'ELECTRON_RUN_AS_NODE']) delete environment[key];
@@ -143,6 +166,13 @@ async function launchAndCheck(executable, expectedTheme) {
   const exitCode = await waitForExit(state);
   await browser.close().catch(() => {});
   const dataPath = path.join(path.dirname(executable), 'quadpane-data');
+  assert.ok(fs.existsSync(persistentIcon), 'Taskbar icon must survive portable launcher exit');
+  assert.deepEqual(fs.readFileSync(persistentIcon), fs.readFileSync(path.join(project, 'desktop', 'quadpane.ico')));
+  const iconMtimeAfter = fs.statSync(persistentIcon).mtimeMs;
+  if (iconMtimeBefore !== null) assert.equal(iconMtimeAfter, iconMtimeBefore, 'Unchanged icon should not be rewritten on launch');
+  const runtimeDirectory = path.dirname(path.dirname(fileURLToPath(new URL('.', url))));
+  assert.equal(fs.existsSync(runtimeDirectory), false, 'Portable runtime must be removed after exit');
+  assert.deepEqual(snapshotPinnedLinks(), pinnedLinksBefore, 'Smoke launches must not modify real taskbar pins');
   for (const directory of ['profile', 'session', 'logs', 'crashes']) assert.ok(fs.statSync(path.join(dataPath, directory)).isDirectory(), `Missing portable ${directory} directory`);
   assert.ok(fs.existsSync(path.join(dataPath, 'session', 'Local Storage')), 'Persistent browser storage missing beside portable EXE');
   const saved = JSON.parse(fs.readFileSync(path.join(dataPath, 'session.json'), 'utf8'));
@@ -151,7 +181,7 @@ async function launchAndCheck(executable, expectedTheme) {
   const preferences = JSON.parse(fs.readFileSync(path.join(dataPath, 'preferences.json'), 'utf8'));
   assert.ok(preferences.favorites.some(item => item.path === folderPaths[0]));
   assert.deepEqual(errors, []);
-  observations.push({ executable, loadedURL: url, rows, dates: dates.length, dateSample: dates[0], theme: expectedTheme, restored, paths: saved.workspaces.design.panes.map(pane => pane.path), layout: saved.workspaces.design.layout, favorites: preferences.favorites, driveCount: native.value.drives.length, dataPath, exitCode, errors });
+  observations.push({ executable, loadedURL: url, rows, dates: dates.length, dateSample: dates[0], theme: expectedTheme, restored, paths: saved.workspaces.design.panes.map(pane => pane.path), layout: saved.workspaces.design.layout, favorites: preferences.favorites, driveCount: native.value.drives.length, dataPath, persistentIcon, iconMtimeBefore, iconMtimeAfter, runtimeDirectoryRemoved: runtimeDirectory, realPinsUnchanged: true, exitCode, errors });
   active = undefined;
   return expectedTheme;
 }
@@ -162,7 +192,7 @@ async function launchAndCheck(executable, expectedTheme) {
   fs.mkdirSync(movedRoot);
   const movedExecutable = path.join(movedRoot, path.basename(sourceExecutable));
   fs.copyFileSync(originalExecutable, movedExecutable);
-  fs.cpSync(path.join(originalRoot, 'quadpane-data'), path.join(movedRoot, 'quadpane-data'), { recursive: true });
+  copyFixtureDirectory(path.join(originalRoot, 'quadpane-data'), path.join(movedRoot, 'quadpane-data'));
   await launchAndCheck(movedExecutable, theme);
   const report = { passed: true, sourceExecutable, sha256, runRoot, observations };
   fs.writeFileSync(path.join(runRoot, 'result.json'), JSON.stringify(report, null, 2));

@@ -35,6 +35,15 @@ const row = (name, workspace = 'design', index = 0) => panel(workspace, index).l
 async function launch() {
   application = await _electron.launch({ executablePath: executable, args: ['--pane-smoke-test'], env: { ...process.env, PORTABLE_EXECUTABLE_DIR: profile }, timeout: 30000 });
   page = await application.firstWindow();
+  await application.evaluate(({ ipcMain, BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
+    // Keep fixture clipboard traffic inside this app; file operations stay real.
+    let clipboard = { sources: [], operation: 'copy' };
+    for (const channel of ['pane:read-shell-clipboard', 'pane:write-shell-clipboard', 'pane:complete-shell-paste']) ipcMain.removeHandler(channel);
+    ipcMain.handle('pane:read-shell-clipboard', () => ({ ok: true, value: clipboard }));
+    ipcMain.handle('pane:write-shell-clipboard', (_event, value) => { clipboard = value; return { ok: true, value }; });
+    ipcMain.handle('pane:complete-shell-paste', () => ({ ok: true, value: null }));
+  });
   page.setDefaultTimeout(15000);
   page.on('pageerror', error => errors.push(error.message));
   await page.getByRole('textbox', { name: '1번 패널 폴더 경로', exact: true }).waitFor();

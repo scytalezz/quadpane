@@ -2,8 +2,8 @@
 
 여러 폴더를 한 화면에 나란히 열고, 패널 사이에서 파일을 복사·이동하는 Windows 멀티패널 파일 탐색기입니다. [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir)의 멀티패널 개념을 현대적인 UI와 안전한 파일 작업으로 개선하는 것을 목표로 합니다.
 
-- 현재 버전: `0.8.1` (Windows x64 포터블 · 소스 기준 2026-10-15)
-- [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.8.1) · [v0.8.1 릴리스 노트](docs/releases/v0.8.1.md)
+- 현재 버전: `0.9.0` (Windows x64 포터블 · 소스 기준 2026-10-19)
+- [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.9.0) · [v0.9.0 릴리스 노트](docs/releases/v0.9.0.md)
 - 설치·관리자 권한·별도 Node.js 불필요 — 실행 파일 하나로 동작
 
 > **English** — *Quadpane* is a multi-pane file explorer for Windows, inspired by Q-Dir. It opens up to four folder panes side by side with copy/move between panes, favorites, two workspaces, drag & drop with Windows Explorer, and full session restore. Ships as a single portable x64 executable built on Electron. Built-in transfers skip conflicts and the Delete key uses the Recycle Bin. Windows shell commands follow Windows and extension behavior. Detailed docs below are in Korean.
@@ -29,7 +29,17 @@
 
 ## 포터블 실행
 
-기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.8.1-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 열린 폴더·작업 공간·즐겨찾기·테마와 표시 설정은 실행 파일 옆 `quadpane-data/`에 저장되며, 기존 설정 폴더를 그대로 재사용할 수 있습니다. EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
+기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.9.0-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 열린 폴더·작업 공간·즐겨찾기·테마와 표시 설정은 실행 파일 옆 `quadpane-data/`에 저장되며, 기존 설정 폴더를 그대로 재사용할 수 있습니다. EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
+
+## v0.9.0 주요 변경
+
+- 폴더 목록과 파일 속성을 한 번에 읽고, 조회 도우미와 같은 경로의 동시 요청을 공유해 탐색 부하를 줄입니다. 도우미는 10초 동안 요청이 없으면 종료합니다.
+- 폴더를 열거나 뒤로·앞으로 이동할 때 나타나던 “경로 불러오는 중…” 안내를 제거합니다. 기존 목록을 유지하고 새로고침 아이콘으로 로딩 상태를 표시합니다.
+- F5와 새로고침 버튼은 최신 메타데이터를 다시 확인합니다. 일반 탐색은 Windows 열거 정보를 사용하므로 다른 하드 링크를 통해 변경한 파일의 크기·날짜가 늦게 반영되면 새로고침을 사용하세요.
+- Delete 확인창을 취소한 뒤 다시 열리는 문제를 수정하고, 패널별 새 폴더·이름 변경·휴지통 아이콘과 드래그 선택 여백을 추가합니다.
+- 포터블 종료 후 작업표시줄 아이콘이 사라지지 않도록 원본 EXE와 지속되는 아이콘 경로를 사용합니다.
+
+자세한 변경 사항과 검증 범위는 [v0.9.0 릴리스 노트](docs/releases/v0.9.0.md)를 참고하세요.
 
 ## v0.8.1 주요 변경
 
@@ -90,6 +100,8 @@ npm run desktop
 
 ## 검증
 
+v0.9.0은 전체 자동 검사와 출시 EXE의 기능 검사를 수행합니다. 상세 결과와 검증 한계는 [PORTABLE.md의 실행 검증](PORTABLE.md#실행-검증)에 기록합니다. 아래 수치는 과거 버전의 기록입니다.
+
 v0.8.1 로컬 검증: JavaScript 34개 파일 문법 검사와 자동 테스트 201개 통과(실패·건너뜀 없음). 도우미 응답·종료, 드래그 취소·경쟁 상황 및 다른 드라이브 간 파일 이동을 확인했습니다.
 
 v0.8.1 배포 후보 EXE에서 셸 연동 7개, 표시·선택·이동 10개, 탐색 9개 검사 그룹과 포터블 런처 3회 실행이 통과했습니다. 최초 실행·재실행·EXE와 설정 폴더 이동 후 복원 및 정상 종료를 확인했습니다. 셸 메뉴·드래그·클립보드 IPC는 테스트용 응답으로 대체하므로 물리적 외부 앱 드롭 검증과 구분합니다.
@@ -110,6 +122,8 @@ node scripts/verification/verify-workflows.cjs 'Playwright가 들어 있는 node
 node scripts/verification/verify-explorer.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-navigation.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 node scripts/verification/verify-display-selection.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
+node scripts/verification/verify-pane-actions.cjs 'Playwright가 들어 있는 node_modules의 절대 경로' 'dist-portable/win-unpacked/Quadpane.exe'
+node scripts/verification/verify-loading.cjs 'Playwright가 들어 있는 node_modules의 절대 경로' 'dist-portable/win-unpacked/Quadpane.exe'
 node scripts/verification/verify-launcher.cjs 'Playwright가 들어 있는 node_modules의 절대 경로'
 ```
 

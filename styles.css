@@ -53,6 +53,12 @@ dialog{background:var(--surface);border:1px solid var(--line);border-radius:12px
 .drive-copy{min-width:0}.sidebar-bottom{margin-top:12px}.refresh-button{background:var(--surface);border:1px solid var(--line);box-shadow:0 1px 1px var(--shadow-sm)}
 .toolbar-context strong{min-width:0;max-width:240px;overflow:hidden;text-overflow:ellipsis}
 .panel-navigation{height:42px;gap:4px;padding:5px 8px}.panel-navigation>.icon-button{height:26px;width:23px}
+.panel-file-actions{display:flex;align-items:center;gap:2px;flex:none}
+.panel-file-actions>.icon-button{width:23px;height:23px}
+.file-panel[aria-busy="true"] [data-action="refresh"],#refresh-button[aria-busy="true"]{color:var(--blue);background:var(--blue-light)}
+.file-panel[aria-busy="true"] [data-action="refresh"] svg,#refresh-button[aria-busy="true"] svg{animation:folder-loading 1s linear infinite}
+@keyframes folder-loading{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.file-panel[aria-busy="true"] [data-action="refresh"] svg,#refresh-button[aria-busy="true"] svg{animation:none}}
 .path-form{display:flex;align-items:center;flex:1;min-width:0;height:29px;border:1px solid var(--line);border-radius:5px;background:var(--surface-subtle);overflow:hidden}
 .path-form:focus-within{border-color:var(--active-border);box-shadow:0 0 0 2px var(--blue-light)}
 .path-input{flex:1;width:100%;min-width:0;height:27px;border:0;padding:0 8px;background:transparent;color:var(--text);font-size:12px;text-overflow:ellipsis}
@@ -67,6 +73,7 @@ dialog{background:var(--surface);border:1px solid var(--line);border-radius:12px
 .session-message{padding:8px 11px;margin-bottom:10px;border:1px solid var(--line);border-radius:6px;background:var(--surface-subtle);color:var(--error);font-size:11px;line-height:1.5;overflow-wrap:anywhere}
 .storage-status{white-space:nowrap}.storage-error{color:var(--error)}
 @media(max-width:1100px){.toolbar-context strong{max-width:160px}.panel-navigation{padding:5px;gap:2px}}
+@media(max-width:1100px){.panel-navigation>.icon-button,.panel-file-actions>.icon-button{width:20px}}
 @media(max-width:760px){.panel-navigation>.icon-button{width:20px}.path-input{padding-left:6px}.panel-message{padding:6px 8px}.file-table .date-column{width:108px}.file-table .size-column{width:80px}.native-required{padding:24px}.native-required h2{font-size:16px}.storage-status{max-width:190px;overflow:hidden;text-overflow:ellipsis}}
 
 /* Compact file details retain the same type size at every window width. */
@@ -162,7 +169,7 @@ dialog{background:var(--surface);border:1px solid var(--line);border-radius:12px
 .panel-footer-right{flex:none}
 .panel-message{position:absolute;z-index:3;top:calc(var(--panel-tab-height) + var(--panel-nav-height));left:0;right:0;margin:0;max-height:calc(100% - var(--panel-tab-height) - var(--panel-nav-height) - var(--panel-footer-height));overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;box-shadow:0 4px 10px var(--shadow-control)}
 .file-scroll{position:relative;overscroll-behavior:contain}
-.file-scroll{padding-inline:8px;padding-bottom:12px}
+.file-scroll{padding-inline:12px 8px;padding-bottom:12px}
 .selection-marquee{position:absolute;z-index:2;pointer-events:none;border:1px solid var(--blue);background:color-mix(in srgb,var(--blue) 15%,transparent)}
 .marquee-selecting,.marquee-selecting *{user-select:none;cursor:crosshair!important}
 .view-settings-button{flex:none;margin-left:auto;border:1px solid var(--line);border-radius:5px}

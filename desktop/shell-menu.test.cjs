@@ -54,8 +54,9 @@ test('cancel releases a hung shell request; late events cannot reject a replacem
 });
 
 test('real x64 shell COM enumerates file, folder, multiple selection and background menus on an STA', { timeout: 60000 }, async t => {
-  const build = spawnSync(process.execPath, [path.join(__dirname, 'build-shell-helper.cjs')], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
-  assert.equal(build.status, 0, build.stdout + build.stderr);
+  // npm pretest builds once before parallel test workers can open this EXE.
+  const helper = path.join(__dirname, 'native', 'bin', 'Quadpane.Shell.exe');
+  assert.ok(fs.existsSync(helper), 'Run npm run build:native before invoking this test directly');
   const requests = [[first], [child], [first, second], []].map((paths, index) => ({ id: String(index), mode: 'inspect', parent: folder, paths }));
   // A malformed selection must not poison the persistent worker's next request.
   requests.splice(2, 0, { id: 'invalid', mode: 'inspect', parent: folder, paths: [path.join(folder, 'absent')] });
@@ -64,7 +65,7 @@ test('real x64 shell COM enumerates file, folder, multiple selection and backgro
   // Match the live parent protocol: EOF means the parent disconnected, so keep
   // stdin open until every response arrives instead of racing the EOF watchdog.
   const result = await new Promise(resolve => {
-    const worker = spawn(path.join(__dirname, 'native', 'bin', 'Quadpane.Shell.exe'), [], {
+    const worker = spawn(helper, [], {
       windowsHide: true, timeout: 30000, stdio: ['pipe', 'pipe', 'pipe'],
     });
     t.after(() => { if (worker.exitCode === null && !worker.killed) worker.kill(); });

@@ -121,6 +121,7 @@ let mutationLabel = '';
 let contextMenuState = null;
 let nameDraft = null;
 let trashDraft = null;
+let deleteKeyHeld = false;
 let internalDrag = null;
 let nativeDragPending = null;
 let dropTarget = null;
@@ -490,8 +491,9 @@ async function openContextMenu(pane,row,x,y,extended = false) {
       // Rename requires an IShellView host. Use our existing dialog and path remapping.
       if (result.value?.action==='rename' && files.length===1) {
         transferPending = false;
+        shellMenuPending = false;
         activate(pane);
-        openNameDialog('rename');
+        openNameDialog('rename',pane);
         return;
       }
       await refreshAffected(() => true);
@@ -542,12 +544,29 @@ async function invokeOpen(path,reveal = false) {
     if (!result?.ok) throw new Error(result?.error?.message || '항목을 열지 못했어요.');
   } catch (error) {showToast(error.message || '항목을 열지 못했어요.');}
 }
-function openNameDialog(kind) {
-  const pane = activePane();
-  const file = selectedFile();
-  if (transferPending || !pane?.loaded || pane.loading || pane.error) return;
-  if (kind==='rename' && (!file || typeof bridge.renameItem!=='function')) return;
-  if (kind==='create' && typeof bridge.createFolder!=='function') return;
+function paneFileActions(pane) {
+  const mutable = ready && pane?.loaded && Boolean(pane.path) && !pane.loading && !pane.error && !transferPending && !nativeDragPending && !shellMenuPending && !shellCancelPending;
+  const count = selectedFiles(pane).length;
+  return {
+    newfolder:Boolean(mutable && typeof bridge?.createFolder==='function'),
+    rename:Boolean(mutable && count===1 && typeof bridge?.renameItem==='function'),
+    trash:Boolean(mutable && count>0 && typeof bridge?.trashItems==='function'),
+  };
+}
+function clearDialogDraft(dialog) {
+  if (dialog.id==='name-dialog') nameDraft = null;
+  if (dialog.id==='trash-dialog') trashDraft = null;
+  if (dialog.id==='transfer-dialog') transferDraft = null;
+}
+function closeDialog(dialog) {
+  clearDialogDraft(dialog);
+  dialog.close();
+}
+function openNameDialog(kind,pane = activePane()) {
+  if ($('dialog[open]')) return;
+  finishMarquee();
+  if (!paneFileActions(pane)[kind==='create'?'newfolder':'rename']) return;
+  const file = selectedFiles(pane)[0];
   closeContextMenu();
   closeAddressMenu();
   nameDraft = {kind,pane,path:kind==='rename'?file.path:pane.path,file};
@@ -587,10 +606,11 @@ function remapReferences(source,destination) {
     pane.forwardHistory = pane.forwardHistory.map(remap);
   });
 }
-function openTrashDialog() {
-  const pane = activePane();
-  const files = selectedFiles();
-  if (!files.length || transferPending || pane.loading || pane.error || typeof bridge.trashItems!=='function') return;
+function openTrashDialog(pane = activePane()) {
+  if ($('dialog[open]')) return;
+  finishMarquee();
+  if (!paneFileActions(pane).trash) return;
+  const files = selectedFiles(pane);
   closeContextMenu();
   closeAddressMenu();
   trashDraft = {paths:files.map((file) => file.path)};
@@ -632,6 +652,7 @@ async function startNativeDrag(sources,pane) {
   // A drop clears the visual/source state before the native IPC can return.
   // Keep its reservation separate, without blocking the in-app file transfer.
   nativeDragPending = internalDrag = drag;
+  updateSelection();
   try {
     const result = await bridge.beginNativeDrag(sources);
     if (nativeDragPending!==drag) return;
@@ -643,6 +664,7 @@ async function startNativeDrag(sources,pane) {
     if (nativeDragPending===drag) {
       nativeDragPending = null;
       if (internalDrag===drag) clearDragState();
+      updateSelection();
       if (ready && !transferPending) refreshAffected(() => true);
     }
   }
@@ -651,6 +673,7 @@ async function cancelShellInteraction() {
   if (shellCancelPending || typeof bridge.cancelShell!=='function') return;
   const cancellation = {};
   shellCancelPending = cancellation;
+  updateSelection();
   try {
     const result = await bridge.cancelShell();
     if (!result?.ok) showToast(result?.error?.message || 'Windows 작업을 취소하지 못했어요.');
@@ -658,7 +681,7 @@ async function cancelShellInteraction() {
   finally {
     // Only the original drag/menu response releases its reservation. A cancel
     // acknowledgement can arrive first, or fail while that operation is live.
-    if (shellCancelPending===cancellation) shellCancelPending = null;
+    if (shellCancelPending===cancellation) {shellCancelPending = null;updateSelection();}
   }
 }
 function marqueeViewport(state) {
@@ -846,7 +869,8 @@ function createPanel(pane) {
   element.className = 'file-panel';
   element.dataset.pane = pane.id;
   element.tabIndex = -1;
-  element.innerHTML = `<div class="panel-tabbar"><div class="panel-tab">${icon('folder','folder-svg')}<span class="panel-tab-label"></span></div><div class="panel-controls"><span class="active-badge" hidden>현재 창</span><button class="icon-button" data-action="expand" title="이 창 확대"></button></div></div><div class="panel-navigation"><button class="icon-button" data-action="back" aria-label="뒤로" title="뒤로 (Alt + ←)" disabled>${icon('back')}</button><button class="icon-button" data-action="forward" aria-label="앞으로" title="앞으로 (Alt + →)" disabled>${icon('forward')}</button><button class="icon-button" data-action="up" aria-label="상위 폴더" title="상위 폴더 (Alt + ↑)" disabled>${icon('up')}</button><form class="path-form"><input class="path-input" aria-label="${pane.index+1}번 패널 폴더 경로" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="폴더 경로 입력"><button class="icon-button path-dropdown-toggle" type="button" data-action="address-menu" aria-label="${pane.index+1}번 패널 경로 목록" aria-haspopup="menu" aria-expanded="false" aria-controls="address-menu-${pane.id}" title="즐겨찾기와 최근 경로 (Alt + ↓)">${icon('down')}</button><button class="icon-button path-go" type="submit" aria-label="입력한 경로 열기" title="입력한 경로 열기 (Enter)">${icon('chevron')}</button><div class="address-menu" id="address-menu-${pane.id}" role="menu" aria-label="${pane.index+1}번 패널 경로 목록" popover="manual"></div></form><button class="icon-button" data-action="refresh" aria-label="폴더 새로고침" title="폴더 새로고침 (F5)">${icon('refresh')}</button></div><div class="panel-message" role="status" hidden></div><div class="file-scroll"></div><div class="panel-footer"><span class="panel-count"></span><span class="panel-footer-right"></span></div>`;
+  const fileActions = `<div class="panel-file-actions" role="group" aria-label="${pane.index+1}번 패널 파일 작업">${[['newfolder','새 폴더','Ctrl + Shift + N','name-dialog'],['rename','이름 변경','F2','name-dialog'],['trash','휴지통으로 이동','Delete','trash-dialog']].map(([action,label,shortcut,dialog]) => `<button type="button" class="icon-button" data-action="${action}" aria-label="${label}" title="${label} (${shortcut})" aria-haspopup="dialog" aria-controls="${dialog}" disabled>${icon(action)}</button>`).join('')}</div>`;
+  element.innerHTML = `<div class="panel-tabbar"><div class="panel-tab">${icon('folder','folder-svg')}<span class="panel-tab-label"></span></div><div class="panel-controls"><span class="active-badge" hidden>현재 창</span><button class="icon-button" data-action="expand" title="이 창 확대"></button></div></div><div class="panel-navigation"><button class="icon-button" data-action="back" aria-label="뒤로" title="뒤로 (Alt + ←)" disabled>${icon('back')}</button><button class="icon-button" data-action="forward" aria-label="앞으로" title="앞으로 (Alt + →)" disabled>${icon('forward')}</button><button class="icon-button" data-action="up" aria-label="상위 폴더" title="상위 폴더 (Alt + ↑)" disabled>${icon('up')}</button><form class="path-form"><input class="path-input" aria-label="${pane.index+1}번 패널 폴더 경로" spellcheck="false" autocomplete="off" autocapitalize="off" placeholder="폴더 경로 입력"><button class="icon-button path-dropdown-toggle" type="button" data-action="address-menu" aria-label="${pane.index+1}번 패널 경로 목록" aria-haspopup="menu" aria-expanded="false" aria-controls="address-menu-${pane.id}" title="즐겨찾기와 최근 경로 (Alt + ↓)">${icon('down')}</button><button class="icon-button path-go" type="submit" aria-label="입력한 경로 열기" title="입력한 경로 열기 (Enter)">${icon('chevron')}</button><div class="address-menu" id="address-menu-${pane.id}" role="menu" aria-label="${pane.index+1}번 패널 경로 목록" popover="manual"></div></form><button class="icon-button" data-action="refresh" aria-label="폴더 새로고침" title="폴더 새로고침 (F5)">${icon('refresh')}</button>${fileActions}</div><div class="panel-message" role="status" hidden></div><div class="file-scroll"></div><div class="panel-footer"><span class="panel-count"></span><span class="panel-footer-right"></span></div>`;
   $('#panels').append(element);
   addressElement(pane).value = pane.path;
   renderPanel(pane);
@@ -865,8 +889,8 @@ function renderPanel(pane) {
   const message = $('.panel-message',panel);
   message.classList.toggle('panel-error',Boolean(pane.error));
   if (pane.loading) {
-    message.textContent = `${pane.pendingPath} 불러오는 중…`;
-    message.hidden = false;
+    message.textContent = '';
+    message.hidden = true;
   } else if (pane.error) {
     message.innerHTML = `<span>${escapeHtml(pane.error.message)}<small>열지 못한 경로: ${escapeHtml(pane.error.path)}${pane.loaded?` · 현재 폴더: ${escapeHtml(pane.path)}`:''}</small></span><button class="retry-button" data-action="retry">다시 시도</button>`;
     message.hidden = false;
@@ -874,7 +898,10 @@ function renderPanel(pane) {
     message.textContent = '';
     message.hidden = true;
   }
-  renderFiles(pane);
+  // The old list stays visible while loading. Rebuild it only when the result
+  // arrives; rewriting it here also wastes a full sort and loses row focus.
+  if (pane.loading && pane.loaded) updateSelection();
+  else renderFiles(pane);
 }
 function renderFiles(pane) {
   if (marquee?.pane === pane) finishMarquee(true);
@@ -932,6 +959,9 @@ function updateSelection() {
     const active = pane.id === current.id;
     panel.classList.toggle('active',active);
     $('.active-badge',panel).hidden = !active;
+    for (const [action,enabled] of Object.entries(paneFileActions(pane))) {
+      $(`[data-action="${action}"]`,panel).disabled = !enabled;
+    }
     const entriesById = new Map(pane.entries.map((file) => [file.id,file]));
     $$('[data-file]',panel).forEach((row) => {
       const selected = pane.selected.has(row.dataset.file);
@@ -942,6 +972,7 @@ function updateSelection() {
     });
   });
   $('#refresh-button').disabled = !current.path;
+  $('#refresh-button').setAttribute('aria-busy',String(current.loading));
   $('#file-info-button').disabled = !selectedFile();
   const files = selectedFiles();
   const canTransfer = typeof bridge.transfer === 'function' && !transferPending;
@@ -997,7 +1028,7 @@ async function navigate(pane,requestedPath,options = {}) {
   pane.pendingPath = requestedPath;
   renderPanel(pane);
   try {
-    const result = await bridge.listDirectory(requestedPath);
+    const result = await bridge.listDirectory(requestedPath,{accurate:options.accurate===true});
     if (token !== pane.requestToken) return;
     if (!result?.ok) throw new Error(result?.error?.message || '폴더를 열지 못했어요. 경로를 확인해 주세요.');
     const directory = result.value;
@@ -1191,7 +1222,8 @@ for (const type of ['pointercancel','lostpointercapture']) document.addEventList
 document.addEventListener('keydown',(event) => {
   if (event.key==='Escape' && marquee) {event.preventDefault();event.stopImmediatePropagation();finishMarquee(true);}
 },true);
-window.addEventListener('blur',() => finishMarquee(true));
+window.addEventListener('blur',() => {deleteKeyHeld=false;finishMarquee(true);});
+document.addEventListener('keyup',(event) => {if (event.key==='Delete') deleteKeyHeld=false;},true);
 $$('button[data-layout]').forEach((button) => {
   button.innerHTML = icon({1:'one',2:'two',4:'four'}[button.dataset.layout]);
   button.addEventListener('click',() => setLayout(Number(button.dataset.layout)));
@@ -1270,11 +1302,16 @@ $('#panels').addEventListener('click',(event) => {
     persistSession();
     return;
   }
-  const action = event.target.closest('[data-action]')?.dataset.action;
+  const actionButton = event.target.closest('[data-action]');
+  if (actionButton?.disabled) return;
+  const action = actionButton?.dataset.action;
+  if (action==='newfolder') openNameDialog('create',pane);
+  if (action==='rename') openNameDialog('rename',pane);
+  if (action==='trash') openTrashDialog(pane);
   if (action==='address-menu') {if (openAddressPane===pane) closeAddressMenu();else openAddressMenu(pane);}
   if (action==='back' || action==='forward') navigateHistory(action,pane);
   if (action==='up' && pane.parent) navigate(pane,pane.parent,{focus:true});
-  if (action==='refresh') navigate(pane,pane.path,{refresh:true,preserveDraft:true});
+  if (action==='refresh') navigate(pane,pane.path,{refresh:true,preserveDraft:true,accurate:true});
   if (action==='retry' && pane.error) navigate(pane,pane.error.path,{history:pane.error.history,historyOrigin:pane.error.historyOrigin});
   if (action==='expand') setLayout(workspace().layout===1?4:1);
 });
@@ -1309,7 +1346,7 @@ $('#file-context-menu').addEventListener('click',(event) => {
   if (action==='trash') openTrashDialog();
   if (action==='info') openInfo(file);
   if (action==='reveal') invokeOpen(file?.path || state.pane.path,true);
-  if (action==='refresh') navigate(state.pane,state.pane.path,{refresh:true,preserveDraft:true});
+  if (action==='refresh') navigate(state.pane,state.pane.path,{refresh:true,preserveDraft:true,accurate:true});
   if (action==='selectall') {state.pane.selected = new Set(sortedFiles(state.pane).map((item) => item.id));updateSelection();}
 });
 $('#file-context-menu').addEventListener('keydown',(event) => {
@@ -1443,7 +1480,7 @@ $('#panels').addEventListener('keydown',(event) => {
   }
 });
 $('#global-search').addEventListener('input',() => {if (ready) visiblePanes().forEach(renderFiles);});
-$('#refresh-button').addEventListener('click',() => navigate(activePane(),activePane().path,{refresh:true,preserveDraft:true}));
+$('#refresh-button').addEventListener('click',() => navigate(activePane(),activePane().path,{refresh:true,preserveDraft:true,accurate:true}));
 $('#file-info-button').addEventListener('click',() => openInfo(selectedFile()));
 $('#add-favorite-button').addEventListener('click',addFavorite);
 $('#copy-button').addEventListener('click',() => copySelection('copy'));
@@ -1469,13 +1506,12 @@ $('#transfer-confirm').addEventListener('click',() => {
   if (!transferDraft?.destination) return;
   const {sources,destination} = transferDraft;
   const operation = $('[name="transfer-operation"]:checked').value;
-  $('#transfer-dialog').close();
-  transferDraft = null;
+  closeDialog($('#transfer-dialog'));
   performTransfer(sources,destination,operation);
 });
 $('#name-form').addEventListener('submit',async (event) => {
   event.preventDefault();
-  if (!nameDraft || transferPending) return;
+  if (!$('#name-dialog').open || !nameDraft || transferPending) return;
   const draft = nameDraft;
   const name = $('#name-input').value;
   if (!name.trim()) {$('#name-error').textContent='이름을 입력해 주세요.';$('#name-error').hidden=false;return;}
@@ -1490,8 +1526,7 @@ $('#name-form').addEventListener('submit',async (event) => {
         $('#name-error').hidden = false;
         return;
       }
-      $('#name-dialog').close();
-      nameDraft = null;
+      closeDialog($('#name-dialog'));
       const createdPath = response.value.path;
       if (draft.kind==='rename') {
         remapReferences(draft.path,createdPath);
@@ -1506,12 +1541,18 @@ $('#name-form').addEventListener('submit',async (event) => {
     if ($('#name-dialog').open) {$('#name-input').focus();$('#name-input').select();}
   }
 });
-$('#name-dialog').addEventListener('cancel',(event) => {if (transferPending) event.preventDefault();});
+for (const dialog of [$('#name-dialog'),$('#trash-dialog'),$('#transfer-dialog')]) {
+  dialog.addEventListener('cancel',(event) => {
+    event.preventDefault();
+    if (dialog.id!=='name-dialog' || !transferPending) closeDialog(dialog);
+  });
+  // close is queued: an older event must not erase a newly opened draft.
+  dialog.addEventListener('close',() => {if (!dialog.open) clearDialogDraft(dialog);});
+}
 $('#trash-confirm').addEventListener('click',async () => {
-  if (!trashDraft || transferPending) return;
+  if (!$('#trash-dialog').open || !trashDraft || transferPending) return;
   const {paths:selection} = trashDraft;
-  $('#trash-dialog').close();
-  trashDraft = null;
+  closeDialog($('#trash-dialog'));
   await runMutation(`${selection.length}개 항목을 휴지통으로 이동 중…`,'trash',selection[0],async () => {
     const response = await bridge.trashItems({paths:selection});
     if (!response?.ok) throw new Error(response?.error?.message || '휴지통으로 이동하지 못했어요.');
@@ -1526,7 +1567,7 @@ $('#trash-confirm').addEventListener('click',async () => {
     await refreshAffected((path) => selection.some((source) => samePath(path,parentPath(source)) || pathWithin(path,source)));
   });
 });
-$$('[data-close-dialog]').forEach((button) => button.addEventListener('click',() => button.closest('dialog').close()));
+$$('[data-close-dialog]').forEach((button) => button.addEventListener('click',() => closeDialog(button.closest('dialog'))));
 $('#help-button').addEventListener('click',() => {
   $('#info-icon').innerHTML=icon('grid');
   $('#info-title').textContent='Quadpane 사용 안내';
@@ -1539,12 +1580,14 @@ document.addEventListener('keydown',(event) => {
   cancelShellInteraction();
 },true);
 document.addEventListener('keydown',(event) => {
+  const repeatedDelete = event.key==='Delete' && (event.repeat || deleteKeyHeld);
+  if (event.key==='Delete') deleteKeyHeld = true;
   if (event.key==='Escape' && $('#view-settings').matches(':popover-open')) {event.preventDefault();closeViewSettings(true);return;}
   if ($('dialog[open]') || !ready) return;
   const key = event.key.toLowerCase();
   if ((event.ctrlKey || event.metaKey) && key==='k') {event.preventDefault();closeAddressMenu();$('#global-search').focus();$('#global-search').select();return;}
   if ((event.ctrlKey || event.metaKey) && key==='l') {event.preventDefault();closeAddressMenu();addressElement(activePane()).focus();addressElement(activePane()).select();return;}
-  if (event.key==='F5') {event.preventDefault();navigate(activePane(),activePane().path,{refresh:true,preserveDraft:true});return;}
+  if (event.key==='F5') {event.preventDefault();navigate(activePane(),activePane().path,{refresh:true,preserveDraft:true,accurate:true});return;}
   const editing = document.activeElement.matches('input,textarea,[contenteditable="true"]');
   if (event.key==='Escape' && contextMenuState) {event.preventDefault();closeContextMenu(true);return;}
   if (event.key==='Escape' && $('#transfer-result').matches(':popover-open')) {event.preventDefault();closeTransferResult(true);return;}
@@ -1560,7 +1603,7 @@ document.addEventListener('keydown',(event) => {
   }
   if (!editing && (event.ctrlKey || event.metaKey) && event.shiftKey && key==='n') {event.preventDefault();openNameDialog('create');return;}
   if (!editing && event.key==='F2') {event.preventDefault();openNameDialog('rename');return;}
-  if (!editing && event.key==='Delete') {event.preventDefault();openTrashDialog();return;}
+  if (!editing && event.key==='Delete') {event.preventDefault();if (!repeatedDelete) openTrashDialog();return;}
   if (!editing && event.altKey && event.key==='Enter') {event.preventDefault();openInfo(selectedFile());return;}
   if (!editing && (event.ctrlKey || event.metaKey) && ['a','c','x','v'].includes(key)) {
     event.preventDefault();

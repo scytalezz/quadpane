@@ -230,7 +230,7 @@ class ShellLifecycleTest {
             evidence.WriteLine("READY");
         };
         Application.Idle += ready;
-        typeof(ShellHost).GetMethod("Main", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, null);
+        typeof(ShellHost).GetMethod("Main", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new object[] { new string[0] });
         return 0;
     }
 }

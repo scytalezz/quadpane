@@ -18,8 +18,10 @@ function deferred() {
 const tick = () => new Promise(resolve => setImmediate(resolve));
 const preventable = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
 
-async function harness({ close = () => undefined, transfer = async request => request } = {}) {
+async function harness({ close = () => undefined, transfer = async request => request,
+  isPackaged = false, platform = 'win32', smokeTest = true, env = {} } = {}) {
   const handlers = new Map(), requests = [], lifecycle = [];
+  const taskbarOptions = [];
   const mutations = createMutationCoordinator();
   let active, window;
   const cancel = () => {
@@ -39,14 +41,16 @@ async function harness({ close = () => undefined, transfer = async request => re
     close() { lifecycle.push('close'); cancel(); return close(); },
   };
   const app = Object.assign(new EventEmitter(), {
-    isPackaged: false, commandLine: { hasSwitch: () => true },
+    isPackaged, commandLine: { hasSwitch: name => name === 'pane-smoke-test' && smokeTest },
     setPath() {}, enableSandbox() {}, setAppUserModelId() {},
     requestSingleInstanceLock: () => true, whenReady: () => Promise.resolve(),
     quitCalls: 0, quit() { this.quitCalls++; },
   });
   class BrowserWindow extends EventEmitter {
-    constructor() {
+    constructor(options) {
       super(); window = this;
+      this.options = options;
+      lifecycle.push('window');
       this.webContents = Object.assign(new EventEmitter(), {
         mainFrame: { url: pathToFileURL(path.join(__dirname, '..', 'index.html')).href },
         setWindowOpenHandler() {}, isDestroyed: () => false,
@@ -54,6 +58,8 @@ async function harness({ close = () => undefined, transfer = async request => re
       });
     }
     setMenu() {}
+    setAppDetails(details) { this.appDetails = details; lifecycle.push('app-details'); }
+    show() { lifecycle.push('show'); }
     setTitle() {}
     isDestroyed() { return false; }
     async loadFile() {}
@@ -62,20 +68,70 @@ async function harness({ close = () => undefined, transfer = async request => re
     electron: { app, BrowserWindow, ipcMain: { handle: (channel, handler) => handlers.set(channel, handler) },
       dialog: { showErrorBox: message => assert.fail(message) }, Menu: { setApplicationMenu() {} }, nativeTheme: {}, shell: {}, screen: {} },
     'node:fs': { mkdirSync() {}, openSync: () => 1, closeSync() {}, unlinkSync() {} },
-    './filesystem.cjs': { errorResult: error => ({ ok: false, error }) },
+    './filesystem.cjs': { errorResult: error => ({ ok: false, error }),
+      listDirectory(directory, options) { return { directory, accurate: options.accurate }; },
+      closeDirectoryReader() { lifecycle.push('close-reader'); } },
     './session-store.cjs': { createSessionStore: () => ({}) },
     './preferences-store.cjs': { createPreferencesStore: () => ({}) },
     './file-operations.cjs': { createTransferService: () => ({ transfer }), transferError: error => error },
     './explorer-actions.cjs': { createMutationCoordinator: () => mutations, createExplorerActions: () => ({}), validatePaths, actionError: error => error },
     './shell-menu.cjs': { createShellMenuService: () => shellMenus },
+    './taskbar.cjs': { createTaskbarIntegration(options) {
+      taskbarOptions.push(options);
+      if (!options.isPackaged || options.platform !== 'win32') return null;
+      return { windowIcon: 'D:\\portable\\quadpane-data\\taskbar\\quadpane.ico',
+        apply(target) { target.setAppDetails({ appId: options.applicationId }); } };
+    } },
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8'), {
     require: name => Object.hasOwn(mocks, name) ? mocks[name] : require(name),
-    __dirname, process: { env: {}, pid: 123, execPath: process.execPath },
+    __dirname, process: { env, pid: 123, platform, execPath: process.execPath, resourcesPath: 'C:\\extracted\\resources' },
   }, { filename: 'main.cjs' });
   await tick();
   const invoke = (channel, ...args) => handlers.get(channel)({ sender: window.webContents, senderFrame: window.webContents.mainFrame }, ...args);
-  return { app, window, invoke, mutations, requests, lifecycle };
+  return { app, window, invoke, mutations, requests, lifecycle, taskbarOptions };
+}
+
+test('directory IPC forwards only explicit accurate mode', async () => {
+  const fixture = await harness();
+  for (const [options, expected] of [[undefined, false], [{ accurate: true }, true], [{ accurate: 'true' }, false], [null, false]]) {
+    const result = await fixture.invoke('pane:list-directory', 'C:\\fixture', options);
+    assert.equal(result.ok, true);
+    assert.equal(result.value.directory, 'C:\\fixture');
+    assert.equal(result.value.accurate, expected);
+  }
+});
+
+test('packaged Windows applies persistent taskbar details before first show', async () => {
+  const env = { PORTABLE_EXECUTABLE_DIR: 'D:\\portable', PORTABLE_EXECUTABLE_FILE: 'D:\\portable\\Quadpane.exe' };
+  const fixture = await harness({ isPackaged: true, smokeTest: false, env });
+  assert.equal(fixture.window.options.icon, 'D:\\portable\\quadpane-data\\taskbar\\quadpane.ico');
+  assert.equal(fixture.window.appDetails.appId, 'com.quadpane.app');
+  fixture.window.emit('ready-to-show');
+  assert.ok(fixture.lifecycle.indexOf('app-details') < fixture.lifecycle.indexOf('show'));
+  const options = fixture.taskbarOptions[0];
+  assert.equal(options.env, env);
+  assert.equal(options.portableDirectory, env.PORTABLE_EXECUTABLE_DIR);
+  assert.equal(options.dataDirectory, path.join(env.PORTABLE_EXECUTABLE_DIR, 'quadpane-data'));
+  assert.equal(options.iconSource, path.join(__dirname, 'quadpane.ico'));
+  assert.equal(options.execPath, process.execPath);
+  assert.equal(options.smokeTest, false);
+});
+
+test('smoke startup passes pin-repair suppression and keeps the window hidden', async () => {
+  const fixture = await harness({ isPackaged: true });
+  assert.equal(fixture.taskbarOptions[0].smokeTest, true);
+  fixture.window.emit('ready-to-show');
+  assert.ok(fixture.lifecycle.includes('app-details'));
+  assert.ok(!fixture.lifecycle.includes('show'));
+});
+
+for (const options of [{ isPackaged: false }, { isPackaged: true, platform: 'linux' }]) {
+  test(`taskbar integration leaves development/non-Windows window behavior unchanged: ${JSON.stringify(options)}`, async () => {
+    const fixture = await harness(options);
+    assert.equal(fixture.window.options.icon, path.join(__dirname, 'quadpane.ico'));
+    assert.equal(fixture.window.appDetails, undefined);
+  });
 }
 
 test('native drag leaves mutation lane free for an in-app drop and cancellation recovers', async () => {
@@ -123,6 +179,7 @@ test('quit waits for graceful shell close once, including prior renderer destruc
   await tick();
   assert.equal(final.prevented, false, 'The final app.quit is allowed through');
   assert.equal(fixture.lifecycle.filter(event => event === 'close').length, 1);
+  assert.equal(fixture.lifecycle.filter(event => event === 'close-reader').length, 1);
 });
 
 for (const trigger of ['before-quit', 'close']) {

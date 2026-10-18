@@ -3,6 +3,9 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
+const { createDirectoryService } = require('./directory-service.cjs');
+const directoryReader = createDirectoryService();
+const pendingListings = new Map();
 
 function invalidPath() {
   const error = new Error('드라이브 또는 공유 폴더의 전체 경로를 입력해 주세요. 예: C:\\Users 또는 \\\\서버\\공유');
@@ -48,100 +51,33 @@ function locationDetails(directory) {
   };
 }
 
-async function mapLimit(items, concurrency, visit) {
-  const results = new Array(items.length);
-  let cursor = 0;
-  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor++;
-      results[index] = await visit(items[index]);
-    }
-  }));
-  return results;
-}
-
-// Paths are data on stdin, never PowerShell source or command-line arguments.
-// File.GetAttributes reads the Windows Hidden bit for files AND directories.
-const READ_HIDDEN_ATTRIBUTES = `
-$ErrorActionPreference = 'Stop'
-[Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-try {
-  $paths = ConvertFrom-Json -InputObject ([Console]::In.ReadToEnd())
-  $hidden = @(foreach ($item in $paths) {
-    try { ([IO.File]::GetAttributes($item) -band [IO.FileAttributes]::Hidden) -ne 0 }
-    catch { $null }
-  })
-  ConvertTo-Json -InputObject $hidden -Compress
-} catch { exit 1 }
-`;
-
-async function readHiddenAttributes(paths) {
-  if (!paths.length) return [];
-  const executable = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  return new Promise((resolve, reject) => {
-    const child = execFile(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', READ_HIDDEN_ATTRIBUTES],
-      { windowsHide: true, timeout: 15000, maxBuffer: Math.max(32768, paths.length * 8 + 2), encoding: 'utf8' }, (error, stdout) => {
-        if (error) return reject(error);
-        try {
-          const hidden = JSON.parse(stdout.replace(/^\uFEFF/u, ''));
-          if (!Array.isArray(hidden) || hidden.length !== paths.length || hidden.some(value => value !== null && typeof value !== 'boolean')) {
-            throw new Error('Invalid hidden attribute response');
-          }
-          resolve(hidden);
-        } catch (parseError) { reject(parseError); }
-      });
-    child.stdin.on('error', error => { child.kill(); reject(error); });
-    // Extended paths retain support for long paths and UNC shares in .NET Framework.
-    child.stdin.end(JSON.stringify(paths.map(filename => path.win32.toNamespacedPath(filename))), 'utf8');
-  }).catch(cause => {
-    throw Object.assign(new Error('파일의 숨김 속성을 읽지 못했습니다. 새로 고침해 주세요.', { cause }), { code: 'METADATA_READ_FAILED' });
-  });
-}
-
-async function listDirectory(input) {
-  const directory = normalizePath(input);
-  const stat = await fs.stat(directory);
-  if (!stat.isDirectory()) {
-    const error = new Error('폴더 경로를 입력해 주세요.');
-    error.code = 'ENOTDIR';
-    throw error;
-  }
-  const children = await fs.readdir(directory, { withFileTypes: true });
+async function readDirectory(directory, accurate) {
+  // All filesystem I/O, including link targets, stays in the killable worker.
+  const children = await directoryReader.list(directory, { accurate });
   let skipped = 0;
-  const entries = await mapLimit(children, 16, async child => {
-    const childPath = path.win32.join(directory, child.name);
-    try {
-      const childStat = await fs.stat(childPath);
-      if (!childStat.isDirectory() && !childStat.isFile()) {
-        skipped++;
-        return null;
-      }
-      return {
-        path: childPath,
-        name: child.name,
-        type: childStat.isDirectory() ? 'folder' : 'file',
-        size: childStat.isDirectory() ? null : childStat.size,
-        modified: Number.isFinite(childStat.mtime.getTime()) ? childStat.mtime.toISOString() : null,
-        ...(child.isSymbolicLink() ? { isSymbolicLink: true } : {}),
-      };
-    } catch {
-      // Files may disappear or become inaccessible while the directory is read.
-      skipped++;
-      return null;
-    }
+  const entries = children.flatMap(child => {
+    if (child.unavailable) { skipped++; return []; }
+    return [{ path: path.win32.join(directory, child.name), name: child.name,
+      type: child.type, size: child.size, modified: child.modified, hidden: child.hidden,
+      ...(child.isSymbolicLink ? { isSymbolicLink: true } : {}) }];
   });
-  const listed = entries.filter(Boolean);
-  // Never turn unavailable metadata into hidden:false. A per-item failure skips
-  // only that item; a process/protocol failure rejects the entire listing.
-  const hidden = await readHiddenAttributes(listed.map(entry => entry.path));
-  const withMetadata = listed.filter((entry, index) => {
-    if (hidden[index] === null) { skipped++; return false; }
-    entry.hidden = hidden[index];
-    return true;
-  });
-  return { ...locationDetails(directory), entries: withMetadata, ...(skipped ? { skipped } : {}) };
+  return { ...locationDetails(directory), entries, ...(skipped ? { skipped } : {}) };
 }
+
+async function listDirectory(input, options = {}) {
+  const directory = normalizePath(input);
+  const accurate = options?.accurate === true;
+  // Share simultaneous requests only; exact refresh cannot reuse a fast scan.
+  // Keep case intact for Windows directories configured as case-sensitive.
+  const key = JSON.stringify([directory, accurate]);
+  if (!pendingListings.has(key)) {
+    const pending = readDirectory(directory, accurate).finally(() => pendingListings.delete(key));
+    pendingListings.set(key, pending);
+  }
+  return pendingListings.get(key);
+}
+
+function closeDirectoryReader() { directoryReader.close(); }
 
 function powershellDriveRoots() {
   const executable = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -206,6 +142,7 @@ function errorResult(error) {
     EHOSTUNREACH: '네트워크 폴더에 연결할 수 없습니다.',
     ETIMEDOUT: '폴더 연결 시간이 초과되었습니다. 연결 상태를 확인해 주세요.',
     METADATA_READ_FAILED: '파일의 숨김 속성을 읽지 못했습니다. 새로 고침해 주세요.',
+    DIRECTORY_READ_FAILED: '폴더 정보를 읽지 못했습니다. 새로 고침해 주세요.',
     INVALID_SESSION: '작업 공간 설정 형식이 올바르지 않습니다.',
     SESSION_WRITE_FAILED: '열어 둔 폴더를 저장하지 못했습니다. 설정 폴더의 쓰기 권한과 남은 공간을 확인해 주세요.',
     FORBIDDEN: '허용되지 않은 화면의 요청입니다.',
@@ -214,4 +151,4 @@ function errorResult(error) {
   return { ok: false, error: { code, message: messages[code] || '폴더를 읽지 못했습니다. 경로와 드라이브 연결 상태를 확인해 주세요.' } };
 }
 
-module.exports = { normalizePath, locationDetails, listDirectory, discoverDrives, getFavorites, errorResult };
+module.exports = { normalizePath, locationDetails, listDirectory, closeDirectoryReader, discoverDrives, getFavorites, errorResult };

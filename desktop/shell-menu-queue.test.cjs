@@ -64,9 +64,14 @@ function fakeTimers() {
 
 for (const mode of ['show', 'drag', 'readClipboard', 'writeClipboard', 'completePaste', 'inspect', 'inspectDrag']) {
   test(`deadline releases hung ${mode} preparation and the next request gets a fresh worker`, async t => {
-    const f = fixture(t, { timeouts: shortTimeouts });
+    const timers = fakeTimers(), f = fixture(t, { timers, timeouts: shortTimeouts });
     const rejected = assert.rejects(f.show(mode), { code: 'SHELL_TIMEOUT' });
     await f.waitFor(1);
+    // Start the timeout check after actual validation reaches the fake worker;
+    // unrelated parallel filesystem work must not consume this 30ms deadline.
+    timers.advance(29);
+    assert.equal(f.service.pending, true);
+    timers.advance(1);
     await bounded(rejected);
     assert.equal(f.service.pending, false);
     assert.equal(f.workers[0].killed, true);

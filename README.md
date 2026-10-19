@@ -2,8 +2,8 @@
 
 여러 폴더를 한 화면에 나란히 열고, 패널 사이에서 파일을 복사·이동하는 Windows 멀티패널 파일 탐색기입니다. [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir)의 멀티패널 개념을 현대적인 UI와 안전한 파일 작업으로 개선하는 것을 목표로 합니다.
 
-- 현재 버전: `0.9.0` (Windows x64 포터블 · 소스 기준 2026-10-19)
-- [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.9.0) · [v0.9.0 릴리스 노트](docs/releases/v0.9.0.md)
+- 현재 버전: `0.9.1` (Windows x64 포터블 · 소스 기준 2026-10-19)
+- [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.9.1) · [v0.9.1 릴리스 노트](docs/releases/v0.9.1.md)
 - 설치·관리자 권한·별도 Node.js 불필요 — 실행 파일 하나로 동작
 
 > **English** — *Quadpane* is a multi-pane file explorer for Windows, inspired by Q-Dir. It opens up to four folder panes side by side with copy/move between panes, favorites, two workspaces, drag & drop with Windows Explorer, and full session restore. Ships as a single portable x64 executable built on Electron. Built-in transfers skip conflicts and the Delete key uses the Recycle Bin. Windows shell commands follow Windows and extension behavior. Detailed docs below are in Korean.
@@ -29,7 +29,22 @@
 
 ## 포터블 실행
 
-기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.9.0-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 열린 폴더·작업 공간·즐겨찾기·테마와 표시 설정은 실행 파일 옆 `quadpane-data/`에 저장되며, 기존 설정 폴더를 그대로 재사용할 수 있습니다. EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
+기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.9.1-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 열린 폴더·작업 공간·즐겨찾기·테마와 표시 설정은 실행 파일 옆 `quadpane-data/`에 저장되며, 기존 설정 폴더를 그대로 재사용할 수 있습니다. EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
+
+## 앱 내 업데이트 (v0.9.1부터)
+
+왼쪽 아래에 현재 버전을 표시합니다. 포터블 실행 후 최신 정식 GitHub 릴리스를 백그라운드에서 한 번 확인하며, 버전 버튼으로 다시 확인할 수 있습니다. 새 버전이 있으면 **다운로드 → 업데이트하고 다시 시작** 순서로 진행합니다. 파일 작업 중에는 재시작하지 않으며 작업 공간과 표시 설정을 저장합니다.
+
+새 EXE는 기존 EXE 옆에 저장하고 `quadpane-data`를 그대로 사용합니다. 다운로드한 파일의 SHA-256을 검증하며 기존 EXE는 보관합니다. 인터넷은 업데이트 확인·다운로드에만 필요합니다. 연결되지 않아도 파일 탐색은 계속 사용할 수 있습니다. 기존 v0.9.0 배포 파일에는 이 기능이 없으므로, 기능을 포함한 첫 버전은 직접 내려받아야 합니다.
+
+## v0.9.1 주요 변경
+
+- 외부 드래그 취소·오류 후 이전 셸 도우미의 실제 종료를 확인하고 다음 요청을 받습니다. 새 도우미가 겹쳐 실행되는 문제를 막습니다.
+- 마우스를 놓은 뒤 응답이 끊기거나 앱이 강제 종료되어도 도우미가 남지 않도록 종료 감시를 보강합니다. 이미 시작한 외부 파일 전송은 시간만으로 중단하거나 자동 재실행하지 않습니다.
+- 드래그 중 포커스 복귀 새로고침 충돌과 취소 후 남는 화면 상태를 수정합니다.
+- 왼쪽 아래에 버전을 표시하고 GitHub 정식 릴리스를 확인·다운로드·재시작하는 업데이트 기능을 추가합니다.
+
+자세한 동작과 검증 범위는 [v0.9.1 릴리스 노트](docs/releases/v0.9.1.md)를 참고하세요.
 
 ## v0.9.0 주요 변경
 

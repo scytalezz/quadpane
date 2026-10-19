@@ -11,6 +11,7 @@ using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using Microsoft.Win32.SafeHandles;
 
 [ComImport, Guid("000214e4-0000-0000-c000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IContextMenu {
@@ -90,11 +91,12 @@ public class DropSource : IDropSource {
     internal void PollRelease(long milliseconds, bool down, bool captured, Action exit) {
         lock (gate) {
             if (phase == Phase.Committing || phase == Phase.Finished) return;
-            if (down || !captured) { releasedSince = -1; return; }
+            if (down) { releasedSince = -1; return; }
             if (releasedSince < 0) releasedSince = milliseconds;
             if (milliseconds - releasedSince >= 1000) phase = Phase.Cancelled;
             // Let a responsive OLE loop observe CANCEL first. If no input is
-            // delivered, retire only this helper while it still owns capture.
+            // delivered, retire this helper even if OLE already lost capture.
+            // An uncommitted call can otherwise leave the service busy forever.
             // The shared gate excludes a concurrent transition to committing.
             if (milliseconds - releasedSince >= 2000) exit();
         }
@@ -112,6 +114,9 @@ public class DropSource : IDropSource {
         watcher.Start();
     }
     internal void Finish() { lock (gate) { phase = Phase.Finished; } }
+    // Reserved protocol exit: only an uncommitted drag reaches this watchdog.
+    // The service must keep other nonzero exits classified as helper failures.
+    internal static void ExitCancelledDrag() { Environment.Exit(2); }
 }
 static class NativeDragInput {
     [DllImport("user32.dll")] static extern short GetAsyncKeyState(int key);
@@ -132,6 +137,64 @@ static class NativeDragInput {
     internal static bool HasCapture(uint thread) {
         var info = new GuiThreadInfo { size = (uint)Marshal.SizeOf(typeof(GuiThreadInfo)) };
         return GetGUIThreadInfo(thread, ref info) && info.capture != IntPtr.Zero;
+    }
+}
+
+// Pipe EOF is insufficient when a descendant inherits the writer. Hold a
+// waitable process handle so parent death is independent of pipes and the STA.
+static class ParentProcessWatch {
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct ProcessEntry {
+        public uint size, usage, id;
+        public UIntPtr heap;
+        public uint module, threads, parent;
+        public int priority;
+        public uint flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string name;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)] static extern SafeFileHandle CreateToolhelp32Snapshot(uint flags, uint process);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool Process32FirstW(SafeFileHandle snapshot, ref ProcessEntry entry);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool Process32NextW(SafeFileHandle snapshot, ref ProcessEntry entry);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern SafeFileHandle OpenProcess(uint access, bool inherit, uint process);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(SafeFileHandle process, out long created, out long exited, out long kernel, out long user);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern uint WaitForSingleObject(SafeFileHandle handle, uint milliseconds);
+    static SafeFileHandle OpenParent() {
+        using (var current = Process.GetCurrentProcess())
+        using (var snapshot = CreateToolhelp32Snapshot(2, 0)) { // TH32CS_SNAPPROCESS
+            if (snapshot.IsInvalid) throw new System.ComponentModel.Win32Exception();
+            var entry = new ProcessEntry { size = (uint)Marshal.SizeOf(typeof(ProcessEntry)) };
+            if (!Process32FirstW(snapshot, ref entry)) throw new System.ComponentModel.Win32Exception();
+            do {
+                if (entry.id != (uint)current.Id) continue;
+                // SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION; no terminate right.
+                var parent = OpenProcess(0x101000, false, entry.parent);
+                if (parent.IsInvalid) {
+                    int error = Marshal.GetLastWin32Error();
+                    parent.Dispose();
+                    if (error == 87) return null; // Parent already exited.
+                    throw new System.ComponentModel.Win32Exception(error);
+                }
+                try {
+                    long created, exited, kernel, user;
+                    if (!GetProcessTimes(parent, out created, out exited, out kernel, out user)) throw new System.ComponentModel.Win32Exception();
+                    // Reject a recycled PID before starting the permanent handle wait.
+                    if (created > current.StartTime.ToUniversalTime().ToFileTimeUtc()) { parent.Dispose(); return null; }
+                    return parent;
+                } catch { parent.Dispose(); throw; }
+            } while (Process32NextW(snapshot, ref entry));
+            throw new InvalidOperationException("Cannot identify shell helper parent");
+        }
+    }
+    internal static void Start(Action disconnected) {
+        SafeFileHandle parent = OpenParent();
+        if (parent == null) { disconnected(); return; }
+        var watcher = new Thread(() => {
+            using (parent) {
+                if (WaitForSingleObject(parent, UInt32.MaxValue) != 0) Environment.Exit(1);
+            }
+            disconnected();
+        });
+        watcher.IsBackground = true;
+        try { watcher.Start(); } catch { parent.Dispose(); throw; }
     }
 }
 
@@ -174,6 +237,7 @@ sealed class ShellLifetime {
         lock (gate) {
             if (disconnected) return;
             disconnected = true;
+            requests.Clear(); // Never start queued clipboard/shell work after cancellation.
             schedule = !scheduled;
             scheduled = true;
         }
@@ -444,7 +508,7 @@ class ShellHost : Form {
                         int result;
                         uint thread = NativeDragInput.GetCurrentThreadId();
                         try {
-                            source.WatchRelease(() => NativeDragInput.HasCapture(thread), () => Environment.Exit(1));
+                            source.WatchRelease(() => NativeDragInput.HasCapture(thread), DropSource.ExitCancelledDrag);
                             if (!source.CanStart()) return CancelledDrag();
                             result = DoDragDrop((System.Runtime.InteropServices.ComTypes.IDataObject)data, source, 3, out effect);
                         } finally { source.Finish(); }
@@ -549,6 +613,10 @@ class ShellHost : Form {
             return;
         }
         Console.InputEncoding = new UTF8Encoding(false); Console.OutputEncoding = new UTF8Encoding(false);
+        // A hidden helper cannot offer WinForms' default exception dialog. Retire
+        // the failed process; never continue with a wedged queue/modal loop.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (sender, error) => Environment.Exit(1);
         SetProcessDpiAwarenessContext(new IntPtr(-4));
         Application.EnableVisualStyles();
         Application.OleRequired();
@@ -556,6 +624,7 @@ class ShellHost : Form {
             IntPtr handle = host.Handle;
             host.lifetime = new ShellLifetime(action => host.BeginInvoke(action), host.Process,
                 () => { OleFlushClipboard(); Application.ExitThread(); }, () => Environment.Exit(0));
+            ParentProcessWatch.Start(host.lifetime.Disconnect);
             var reader = new Thread(() => host.lifetime.Read(Console.ReadLine));
             reader.IsBackground = true;
             reader.Start();

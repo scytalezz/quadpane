@@ -106,12 +106,19 @@ let recentPaths = [];
 let displayPreferences = {showHidden:false,showExtensions:true};
 let drives = [];
 let ready = false;
+let bootError = '';
 let bootstrapToken = 0;
 let saveRevision = 0;
+let lastSessionSave = Promise.resolve(false);
+let update = {currentVersion:null,status:hasNativeBridge?'idle':'unsupported',latestVersion:null,progress:null,message:'',releaseUrl:null};
+let updateRevision = 0;
+let updateActionPending = '';
+let updateActionError = '';
 let startupWarning = '';
 let saveError = '';
 let preferenceError = '';
 let preferenceRevision = 0;
+let lastPreferenceSave = Promise.resolve(false);
 let openAddressPane = null;
 let clipboard = null;
 let clipboardRevision = 0;
@@ -169,47 +176,175 @@ function renderStorageMessage() {
   $('#storage-status').classList.toggle('storage-error',Boolean(saveError));
 }
 function persistSession() {
-  if (!ready) return;
+  if (!ready) return Promise.resolve(false);
   const revision = ++saveRevision;
   $('#storage-status').textContent = '폴더 위치 저장 중…';
   // Dispatch every committed change now; the main process writes each snapshot synchronously.
   let request;
   try { request = bridge.saveSession(sessionSnapshot()); }
   catch (error) { request = Promise.reject(error); }
-  Promise.resolve(request).then((result) => {
-    if (revision !== saveRevision) return;
+  lastSessionSave = Promise.resolve(request).then((result) => {
     if (!result?.ok) throw new Error(result?.error?.message || '설정을 저장하지 못했어요.');
+    if (revision !== saveRevision) return true;
     saveError = '';
     $('#storage-status').textContent = '폴더 위치 자동 저장';
     renderStorageMessage();
+    return true;
   }).catch((error) => {
-    if (revision !== saveRevision) return;
+    if (revision !== saveRevision) return false;
     saveError = `열린 폴더를 저장하지 못했어요. ${error.message || '설정 폴더를 확인해 주세요.'}`;
     $('#storage-status').textContent = '폴더 위치 저장 실패';
     renderStorageMessage();
+    return false;
   });
+  return lastSessionSave;
+}
+function updateInstallBlocked() {
+  return !ready || transferPending || nativeDragPending || internalDrag || shellMenuPending || shellCancelPending || allPanes().some((pane) => pane.loading);
+}
+function receiveUpdateState(state) {
+  if (!state || typeof state!=='object') return;
+  updateRevision++;
+  update = {
+    currentVersion:typeof state.currentVersion==='string' && state.currentVersion ? state.currentVersion : update.currentVersion,
+    status:['idle','checking','current','available','downloading','ready','error','unsupported'].includes(state.status) ? state.status : 'error',
+    latestVersion:typeof state.latestVersion==='string' ? state.latestVersion : null,
+    progress:typeof state.progress==='number' && Number.isFinite(state.progress) ? Math.max(0,Math.min(100,state.progress)) : null,
+    message:typeof state.message==='string' ? state.message : '',
+  };
+  updateActionError = '';
+  renderUpdate();
+}
+function renderUpdate() {
+  const {status,currentVersion,latestVersion,progress,message} = update;
+  const version = currentVersion ? `v${currentVersion}` : '버전 확인 불가';
+  const labels = {idle:'업데이트 확인',checking:'업데이트 확인 중…',current:'최신 버전',available:'업데이트 가능',downloading:progress===null?'다운로드 중…':`다운로드 ${Math.round(progress)}%`,ready:'설치 준비 완료',error:'업데이트 확인 실패',unsupported:'포터블 앱에서 업데이트 가능'};
+  const footer = $('#update-button');
+  footer.dataset.status = status;
+  footer.title = `${version} · ${bootError ? `앱 시작 실패: ${bootError}` : labels[status]}${status==='error' && message ? `: ${message}` : ''}`;
+  footer.setAttribute('aria-label',`${version} · ${bootError?'앱 시작 실패':labels[status]}`);
+  $('#app-version').textContent = version;
+  $('#update-indicator').textContent = bootError ? '시작 실패' : labels[status];
+  $('#update-indicator').hidden = !bootError && ['idle','current','unsupported'].includes(status);
+  $('#update-current-version').textContent = version;
+  $('#update-latest-version').textContent = latestVersion ? `v${latestVersion}` : '확인 전';
+  const messages = {
+    idle:'새 버전이 있는지 확인할 수 있어요.',checking:'새 버전을 확인하고 있어요.',current:'현재 최신 버전을 사용하고 있어요.',
+    available:'새 버전을 다운로드할 수 있어요.',downloading:`${labels.downloading} 창을 닫아도 다운로드는 계속됩니다.`,
+    ready:'다운로드가 완료됐어요. 준비되면 업데이트하고 다시 시작하세요.',error:'업데이트를 확인하지 못했어요. 잠시 후 다시 시도해 주세요.',
+    unsupported:'업데이트는 Windows 포터블 앱에서 사용할 수 있어요.',
+  };
+  $('#update-message').textContent = message || messages[status];
+  const progressBar = $('#update-progress');
+  progressBar.hidden = status!=='downloading';
+  if (progress===null) progressBar.removeAttribute('value');else progressBar.value = progress;
+  const installing = updateActionPending==='installUpdate';
+  const pending = Boolean(updateActionPending) || ['checking','downloading'].includes(status);
+  $('#update-check').hidden = ['available','downloading','ready','unsupported'].includes(status);
+  $('#update-check').disabled = pending || typeof bridge?.checkForUpdates!=='function';
+  $('#update-download').hidden = status!=='available';
+  $('#update-download').disabled = pending || typeof bridge?.downloadUpdate!=='function';
+  $('#update-install').hidden = status!=='ready';
+  $('#update-install').disabled = pending || Boolean(updateInstallBlocked()) || typeof bridge?.installUpdate!=='function';
+  $('#update-install').textContent = installing ? '폴더 위치 저장 및 재시작 준비 중…' : '업데이트하고 다시 시작';
+  $('#update-install-note').hidden = status!=='ready';
+  $('#update-install-note').textContent = updateInstallBlocked() ? '폴더를 불러오거나 파일 작업 중에는 다시 시작할 수 없어요. 작업이 끝나면 시도해 주세요.' : '열린 폴더 위치를 저장한 뒤 앱을 다시 시작합니다.';
+  $('#update-action-error').textContent = updateActionError;
+  $('#update-action-error').hidden = !updateActionError;
+  $$('[data-close-dialog]',$('#update-dialog')).forEach((button) => {button.disabled=installing;});
+}
+async function requestUpdate(method) {
+  if (updateActionPending || typeof bridge?.[method]!=='function') return;
+  if (method==='downloadUpdate' && update.status!=='available') return;
+  if (method==='checkForUpdates' && ['checking','downloading','ready','unsupported'].includes(update.status)) return;
+  if (method==='installUpdate' && (update.status!=='ready' || !$('#update-dialog').open || updateInstallBlocked())) return;
+  updateActionPending = method;
+  updateActionError = '';
+  const revision = updateRevision;
+  let restarting = false;
+  renderUpdate();
+  try {
+    if (method==='installUpdate') {
+      // A navigation that finishes during the save may commit a newer snapshot.
+      persistSession();
+      let saving;
+      let saved;
+      do { saving=lastSessionSave; saved=await saving; } while (saving!==lastSessionSave);
+      if (!saved) throw new Error('열린 폴더 위치를 저장하지 못해 다시 시작하지 않았어요. 저장 위치를 확인한 뒤 다시 시도해 주세요.');
+      if (typeof bridge.savePreferences==='function') {
+        persistPreferences();
+        do { saving=lastPreferenceSave; saved=await saving; } while (saving!==lastPreferenceSave);
+        if (!saved) throw new Error('보기 설정을 저장하지 못해 다시 시작하지 않았어요. 저장 위치를 확인한 뒤 다시 시도해 주세요.');
+      }
+      if (update.status!=='ready' || updateInstallBlocked()) throw new Error('진행 중인 작업이 끝난 뒤 다시 시도해 주세요.');
+    }
+    const response = await bridge[method]();
+    if (!response?.ok) throw new Error(response?.error?.message || '업데이트 작업을 완료하지 못했어요.');
+    // Events may already contain newer progress than an earlier IPC reply.
+    if (response.value?.status && revision===updateRevision) receiveUpdateState(response.value);
+    restarting = method==='installUpdate';
+  } catch (error) {
+    updateActionError = error.message || '업데이트 작업을 완료하지 못했어요. 다시 시도해 주세요.';
+    if (method!=='installUpdate' && !['available','ready','unsupported'].includes(update.status)) {
+      update = {...update,status:'error',message:updateActionError};
+    }
+  } finally {
+    if (!restarting) updateActionPending = '';
+    renderUpdate();
+  }
+}
+function openUpdateDialog() {
+  if ($('dialog[open]')) return;
+  finishMarquee(true);
+  closeAddressMenu();closeContextMenu();closeViewSettings();closeTransferResult();
+  renderUpdate();
+  $('#update-dialog').showModal();
+  $('#update-button').setAttribute('aria-expanded','true');
+  $('#update-close').focus();
+  if (['idle','current'].includes(update.status)) requestUpdate('checkForUpdates');
+}
+async function initializeUpdates() {
+  renderUpdate();
+  const unsubscribe = bridge?.onUpdateState?.(receiveUpdateState);
+  if (typeof unsubscribe==='function') window.addEventListener('pagehide',unsubscribe,{once:true});
+  if (typeof bridge?.updateState!=='function') {
+    receiveUpdateState({...update,status:'unsupported'});
+    return;
+  }
+  const revision = updateRevision;
+  try {
+    const response = await bridge.updateState();
+    if (revision!==updateRevision) return;
+    if (!response?.ok) throw new Error(response?.error?.message || '업데이트 상태를 확인하지 못했어요.');
+    receiveUpdateState(response.value);
+  } catch (error) {
+    if (revision===updateRevision) receiveUpdateState({...update,status:'error',message:error.message});
+  }
 }
 function persistPreferences() {
-  if (!ready || typeof bridge.savePreferences !== 'function') return;
+  if (!ready || typeof bridge.savePreferences !== 'function') return Promise.resolve(false);
   const revision = ++preferenceRevision;
   const snapshot = {favorites:userFavorites.map((item) => ({...item})),recentPaths:[...recentPaths],...displayPreferences};
   let request;
   try { request = bridge.savePreferences(snapshot); }
   catch (error) { request = Promise.reject(error); }
-  Promise.resolve(request).then((result) => {
-    if (revision !== preferenceRevision) return;
+  lastPreferenceSave = Promise.resolve(request).then((result) => {
     if (!result?.ok) throw new Error(result?.error?.message || '설정을 저장하지 못했어요.');
+    if (revision !== preferenceRevision) return true;
     userFavorites = result.value.favorites;
     recentPaths = result.value.recentPaths;
     preferenceError = '';
     renderSidebar();
     updateSelection();
     renderStorageMessage();
+    return true;
   }).catch((error) => {
-    if (revision !== preferenceRevision) return;
+    if (revision !== preferenceRevision) return false;
     preferenceError = `보기 설정·즐겨찾기·최근 경로를 저장하지 못했어요. ${error.message || '설정 폴더를 확인해 주세요.'}`;
     renderStorageMessage();
+    return false;
   });
+  return lastPreferenceSave;
 }
 function rememberPath(path) {
   if (samePath(recentPaths[0],path)) return;
@@ -559,8 +694,10 @@ function clearDialogDraft(dialog) {
   if (dialog.id==='transfer-dialog') transferDraft = null;
 }
 function closeDialog(dialog) {
+  if (dialog.id==='update-dialog' && updateActionPending==='installUpdate') return;
   clearDialogDraft(dialog);
   dialog.close();
+  if (dialog.id==='update-dialog') $('#update-button').setAttribute('aria-expanded','false');
 }
 function openNameDialog(kind,pane = activePane()) {
   if ($('dialog[open]')) return;
@@ -645,6 +782,7 @@ function clearDragState() {
   clearDropFeedback();
   internalDrag = null;
   $$('.drag-source').forEach((row) => row.classList.remove('drag-source'));
+  renderUpdate();
 }
 async function startNativeDrag(sources,pane) {
   clearDragState();
@@ -991,6 +1129,7 @@ function updateSelection() {
   $('#toolbar-context').innerHTML = `${icon('folder')}<span>현재 창</span><strong title="${escapeHtml(current.path)}">${escapeHtml(current.name)}</strong>`;
   $('#selection-status').textContent = files.length ? `${files.length}개 선택${files.some((file) => file.type!=='folder')?` · ${sizeText(files.reduce((total,file) => total+(file.size || 0),0))}`:''}` : `${visiblePanes().length}개 창 열림`;
   $('#selection-status').classList.toggle('selection-description',Boolean(files.length));
+  renderUpdate();
 }
 function activate(pane) {
   if (!pane || pane.workspaceId !== workspaceId) return;
@@ -1129,10 +1268,11 @@ function showUnavailable(message,retry = false) {
   finishMarquee(true);
   ready = false;
   renderSidebar();
-  $('#connection-status').textContent = hasNativeBridge?'PC 연결 실패':'포터블 앱 전용';
-  $('#storage-status').textContent = hasNativeBridge?'PC 연결을 확인해 주세요':'포터블 앱에서 위치 자동 저장';
+  bootError = hasNativeBridge ? message : '';
+  renderUpdate();
+  $('#storage-status').textContent = hasNativeBridge?'앱 시작 실패':'포터블 앱에서 위치 자동 저장';
   $('#panels').dataset.layout = '1';
-  $('#panels').innerHTML = `<section class="native-required">${icon('desktop')}<h2>${escapeHtml(message)}</h2><p>${hasNativeBridge?'PC 연결을 다시 확인해 주세요.':'다운로드한 Quadpane 포터블 실행파일을 열면 이 PC의 드라이브와 폴더를 탐색할 수 있어요.'}</p>${retry?'<button class="primary-button" id="bootstrap-retry">다시 연결</button>':''}</section>`;
+  $('#panels').innerHTML = `<section class="native-required">${icon('desktop')}<h2>${escapeHtml(message)}</h2><p>${hasNativeBridge?'앱을 다시 시작하거나 아래 버튼으로 다시 시도해 주세요.':'다운로드한 Quadpane 포터블 실행파일을 열면 이 PC의 드라이브와 폴더를 탐색할 수 있어요.'}</p>${retry?'<button class="primary-button" id="bootstrap-retry">다시 시도</button>':''}</section>`;
   $('#global-search').disabled = true;
   $('#refresh-button').disabled = true;
   $('#file-info-button').disabled = true;
@@ -1142,6 +1282,7 @@ function showUnavailable(message,retry = false) {
 }
 async function bootstrap() {
   const token = ++bootstrapToken;
+  const updateAtStart = updateRevision;
   if (!hasNativeBridge) {
     showUnavailable('PC 파일을 탐색하려면 포터블 앱에서 실행하세요');
     return;
@@ -1151,6 +1292,14 @@ async function bootstrap() {
     const result = await bridge.bootstrap();
     if (token !== bootstrapToken) return;
     if (!result?.ok) throw new Error(result?.error?.message || '이 PC의 폴더를 불러오지 못했어요.');
+    if (result.value.update) {
+      if (updateAtStart===updateRevision) receiveUpdateState(result.value.update);
+      else if (!update.currentVersion && typeof result.value.update.currentVersion==='string') {
+        // Bootstrap can still provide the version when the separate state read failed.
+        update.currentVersion = result.value.update.currentVersion;
+        renderUpdate();
+      }
+    }
     favorites = result.value.favorites || [];
     userFavorites = result.value.preferences?.favorites || [];
     recentPaths = result.value.preferences?.recentPaths || [];
@@ -1166,13 +1315,14 @@ async function bootstrap() {
       return [id,{...definition,layout:saved.layout,active:saved.layout===2 && saved.active>1?0:saved.active,panes:saved.panes.map((pane,index) => makePane(id,index,pane))}];
     }));
     ready = true;
+    bootError = '';
     $('#panels').innerHTML = '';
     allPanes().forEach(createPanel);
     renderSidebar();
     updateWorkspaceView();
     $('#global-search').disabled = false;
     $('#view-settings-button').disabled = false;
-    $('#connection-status').textContent = '이 PC에 연결됨';
+    renderUpdate();
     $('#storage-status').textContent = '폴더 위치 자동 저장';
     renderStorageMessage();
     if (!result.value.session) persistSession();
@@ -1195,6 +1345,18 @@ $('#paste-icon').innerHTML = icon('paste');
 $('#transfer-icon').innerHTML = icon('transfer');
 $('#transfer-dialog-icon').innerHTML = icon('transfer');
 $('#trash-dialog-icon').innerHTML = icon('trash');
+$('#update-dialog-icon').innerHTML = icon('download');
+$('#update-button').addEventListener('click',openUpdateDialog);
+$('#update-check').addEventListener('click',() => requestUpdate('checkForUpdates'));
+$('#update-download').addEventListener('click',() => requestUpdate('downloadUpdate'));
+$('#update-install').addEventListener('click',() => requestUpdate('installUpdate'));
+$('#update-dialog').addEventListener('cancel',(event) => {
+  event.preventDefault();
+  closeDialog($('#update-dialog'));
+});
+$('#update-dialog').addEventListener('close',() => {
+  if (!$('#update-dialog').open) $('#update-button').setAttribute('aria-expanded','false');
+});
 $('#view-settings-button').addEventListener('click',() => {
   const menu = $('#view-settings');
   if (menu.matches(':popover-open')) {closeViewSettings(true);return;}
@@ -1361,7 +1523,7 @@ $('#file-context-menu').addEventListener('keydown',(event) => {
   if (event.key==='Escape' || event.key==='Tab') {event.preventDefault();event.stopPropagation();closeContextMenu(true);}
 });
 $('#panels').addEventListener('dragstart',(event) => {
-  if (marquee || marqueeGuard || nativeDragPending || shellMenuPending || shellCancelPending) {event.preventDefault();return;}
+  if (!ready || $('dialog[open]') || marquee || marqueeGuard || nativeDragPending || shellMenuPending || shellCancelPending) {event.preventDefault();return;}
   const row = event.target.closest('[data-file]');
   const pane = row && paneFromElement(row);
   if (!pane || pane.loading || pane.error || transferPending) {event.preventDefault();return;}
@@ -1375,11 +1537,13 @@ $('#panels').addEventListener('dragstart',(event) => {
     startNativeDrag(sources,pane);
     return;
   }
+  clearDragState();
   internalDrag = {sources,originPaneId:pane.id,token:crypto.randomUUID()};
   event.dataTransfer.effectAllowed = 'copyMove';
   // The payload identifies this live selection; file paths are never accepted from HTML drag text.
   event.dataTransfer.setData('application/x-pane-selection',internalDrag.token);
   $$('[data-file]',panelElement(pane)).filter((item) => pane.selected.has(item.dataset.file)).forEach((item) => item.classList.add('drag-source'));
+  renderUpdate();
 });
 $('#panels').addEventListener('dragover',(event) => {
   if (!hasSupportedDrop(event)) return;
@@ -1627,11 +1791,14 @@ document.addEventListener('pointerdown',(event) => {
 });
 window.addEventListener('resize',() => {finishMarquee(true);closeViewSettings();closeAddressMenu();closeContextMenu();closeTransferResult();clearDropFeedback();});
 window.addEventListener('focus',() => {
-  if (!ready || transferPending) return;
+  // OLE can return focus before its drag response. Refreshing here disables live
+  // drop targets and competes with the helper; completion already refreshes them.
+  if (!ready || transferPending || nativeDragPending || internalDrag || shellMenuPending || shellCancelPending) return;
   syncShellClipboard().catch(() => {});
   allPanes().filter((pane) => pane.loaded && !pane.loading).forEach((pane) => navigate(pane,pane.path,{refresh:true,preserveDraft:true}));
 });
 bridge?.onNavigateBack?.(() => navigateHistory('back'));
 bridge?.onNavigateForward?.(() => navigateHistory('forward'));
 renderSidebar();
+initializeUpdates();
 bootstrap();

@@ -1,6 +1,7 @@
 // Headless lifecycle tests. No shell commands, clipboard access or input injection.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Text;
@@ -9,6 +10,18 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
 class ShellLifecycleTest {
+    sealed class HeldReader : TextReader {
+        readonly TextWriter evidence;
+        bool sent;
+        internal HeldReader(TextWriter evidence) { this.evidence = evidence; }
+        public override string ReadLine() {
+            if (!sent) { sent = true; return "{"; }
+            evidence.WriteLine("INPUT_BLOCKED"); evidence.Flush();
+            // Model a pipe whose writer is still inherited/open after parent death.
+            new ManualResetEvent(false).WaitOne();
+            return null;
+        }
+    }
     sealed class ObservedReader : TextReader {
         readonly TextReader input;
         readonly TextWriter evidence;
@@ -108,9 +121,9 @@ class ShellLifecycleTest {
         source.PollRelease(0, false, true, exit);
         source.PollRelease(1900, true, true, exit);
         source.PollRelease(2000, false, true, exit);
-        source.PollRelease(3900, false, false, exit);
+        source.PollRelease(3900, true, false, exit);
         source.PollRelease(4000, false, true, exit);
-        Check(exits == 1, "held button or absent capture resets the timer");
+        Check(exits == 1, "held button resets the timer");
         source.Finish();
         source = create();
         source.QueryContinueDrag(false, 1);
@@ -118,6 +131,12 @@ class ShellLifecycleTest {
         Check(source.QueryContinueDrag(false, 0) == 0x40100, "normal drop can commit within grace");
         source.PollRelease(100000, false, true, exit);
         Check(exits == 1 && commits == 1, "arbitrarily long target transfer is exempt");
+        source.Finish();
+        source = create();
+        source.CanStart();
+        source.PollRelease(0, false, false, exit);
+        source.PollRelease(2000, false, false, exit);
+        Check(exits == 2, "uncommitted OLE hang is retired even after capture was lost");
         source.Finish();
     }
     static void RaceTests() {
@@ -139,7 +158,7 @@ class ShellLifecycleTest {
         }
         Check(true, "100 competing watchdog/drop transitions remain mutually exclusive");
     }
-    static void QueueTests(bool failRead) {
+    static void QueueTests(bool failRead, bool cancelQueued) {
         var posted = new Queue<Action>();
         var processed = new List<string>();
         int closed = 0, exited = 0, read = 0;
@@ -151,17 +170,19 @@ class ShellLifecycleTest {
             while (posted.Count > 0) posted.Dequeue()();
             processed.Add(line);
             processing = false;
-        }, () => { if (processing || processed.Count != 2) nested = true; closed++; }, () => Interlocked.Increment(ref exited));
+        }, () => { if (processing) nested = true; closed++; }, () => Interlocked.Increment(ref exited));
         lifetime.Read(() => {
             if (read++ == 0) return "first";
             if (read == 2) return "second";
+            if (!cancelQueued) posted.Dequeue()();
             if (failRead) throw new IOException("Controlled broken input pipe");
             return null;
         });
         Check(lifetime.IsDisconnected && posted.Count == 1, "disconnect schedules one serial drain");
         posted.Dequeue()();
-        Check(!nested && String.Join(",", processed) == "first,second", "FIFO survives nested message pumping");
-        Check(closed == 1 && exited == 0, "graceful shutdown waits until all requests return");
+        Check(!nested && String.Join(",", processed) == (cancelQueued ? "" : "first,second"),
+            cancelQueued ? "disconnect cancels queued clipboard work before it starts" : "FIFO survives nested message pumping");
+        Check(closed == 1 && exited == 0, "shutdown does not reenter active work");
         lifetime.Disconnect();
         Check(posted.Count == 0 && closed == 1, "disconnect is idempotent");
     }
@@ -187,24 +208,74 @@ class ShellLifecycleTest {
                 "progress frame preserves request identity without final-response fields");
         }
     }
+    static int ParentFixture() {
+        string executable = Assembly.GetExecutingAssembly().Location;
+        using (var child = Process.Start(new ProcessStartInfo(executable, "parent-host") {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true
+        })) {
+            Console.WriteLine("HELPER_ID " + child.Id); Console.Out.Flush();
+            string line;
+            while ((line = child.StandardOutput.ReadLine()) != null) {
+                Console.WriteLine(line); Console.Out.Flush();
+                if (line == "READY") { child.StandardInput.WriteLine("{"); child.StandardInput.Flush(); }
+            }
+            child.WaitForExit();
+            return child.ExitCode;
+        }
+    }
+    static void ParentDeathTest() {
+        string executable = Assembly.GetExecutingAssembly().Location;
+        using (var parent = Process.Start(new ProcessStartInfo(executable, "fixture-parent") {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true
+        })) {
+            Process child = null;
+            try {
+                string line = parent.StandardOutput.ReadLine();
+                Check(line != null && line.StartsWith("HELPER_ID "), "fixture reports its exact child");
+                child = Process.GetProcessById(Int32.Parse(line.Substring(10)));
+                IntPtr pinned = child.Handle; // Hold identity before terminating the fixture parent.
+                Check(String.Equals(child.MainModule.FileName, executable, StringComparison.OrdinalIgnoreCase), "only the private fixture executable is observed");
+                bool uiBlocked = false, inputBlocked = false;
+                while (!(uiBlocked && inputBlocked) && (line = parent.StandardOutput.ReadLine()) != null) {
+                    uiBlocked |= line == "UI_BLOCKED"; inputBlocked |= line == "INPUT_BLOCKED";
+                }
+                Check(uiBlocked && inputBlocked, "actual host STA and stdin reader are blocked");
+                parent.Kill(); parent.WaitForExit();
+                Check(child.WaitForExit(4500), "parent death exits helper without waiting for stdin EOF");
+                Check(child.ExitCode == 0, "parent death uses normal shutdown exit code");
+            } finally {
+                if (!parent.HasExited) { parent.Kill(); parent.WaitForExit(); }
+                if (child != null) {
+                    if (!child.HasExited) { child.Kill(); child.WaitForExit(); }
+                    child.Dispose();
+                }
+            }
+        }
+    }
     [STAThread] static int Main(string[] args) {
         try { return Run(args); }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
     }
     static int Run(string[] args) {
+        if (args[0] == "parent-death") { ParentDeathTest(); return 0; }
+        if (args[0] == "fixture-parent") return ParentFixture();
         if (args[0] == "buttons") { ButtonTests(); return 0; }
         if (args[0] == "drag") { DragTests(); return 0; }
         if (args[0] == "watchdog") { WatchdogTests(); return 0; }
         if (args[0] == "races") { RaceTests(); return 0; }
         if (args[0] == "progress") { ProgressTests(); return 0; }
-        if (args[0] == "queue" || args[0] == "queue-error") { QueueTests(args[0] == "queue-error"); return 0; }
+        if (args[0].StartsWith("queue")) { QueueTests(args[0].EndsWith("error"), args[0].Contains("cancel")); return 0; }
         if (args[0] == "first-released") {
             int result = new DropSource().QueryContinueDrag(false, 0);
             Console.WriteLine("first released callback: 0x" + result.ToString("x"));
             return result == 0x40101 ? 0 : 1;
         }
         var evidence = TextWriter.Synchronized(new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true });
-        var failSafe = new Thread(() => { Thread.Sleep(7000); evidence.WriteLine("TEST_DEADLINE"); Environment.Exit(124); });
+        var failSafe = new Thread(() => {
+            Thread.Sleep(7000);
+            try { evidence.WriteLine("TEST_DEADLINE"); } catch (IOException) { }
+            Environment.Exit(124);
+        });
         failSafe.IsBackground = true;
         failSafe.Start();
         if (args[0] == "blocked-shutdown") {
@@ -218,14 +289,30 @@ class ShellLifecycleTest {
         if (args[0] == "lost-release") {
             var source = new DropSource(() => false, () => false, () => { throw new Exception("Unexpected commit"); });
             // Fake physical/capture readings only; no OLE loop or global input.
-            source.WatchRelease(() => true, () => Environment.Exit(23));
+            source.WatchRelease(() => false, DropSource.ExitCancelledDrag);
             new ManualResetEvent(false).WaitOne();
             return 1;
         }
         EventHandler ready = null;
+        System.Windows.Forms.Timer crash = null;
+        if (args[0] == "thread-exception") {
+            // Prevent a default modal dialog on the unfixed baseline. The real
+            // host must add its own terminating handler, not swallow the fault.
+            Application.ThreadException += (sender, eventArgs) => evidence.WriteLine("THREAD_EXCEPTION_DISPATCHED");
+        }
         ready = (sender, eventArgs) => {
             Application.Idle -= ready;
-            Console.SetIn(new ObservedReader(Console.In, evidence, args[0] == "blocked-host-error"));
+            if (args[0] == "thread-exception") {
+                crash = new System.Windows.Forms.Timer { Interval = 20 };
+                crash.Tick += (s, e) => {
+                    crash.Stop(); evidence.WriteLine("THREAD_EXCEPTION_THROWN");
+                    throw new InvalidOperationException("Controlled UI callback failure");
+                };
+                crash.Start();
+                evidence.WriteLine("READY");
+                return;
+            }
+            Console.SetIn(args[0] == "parent-host" ? (TextReader)new HeldReader(evidence) : new ObservedReader(Console.In, evidence, args[0] == "blocked-host-error"));
             Console.SetOut(new BlockedWriter(evidence));
             evidence.WriteLine("READY");
         };

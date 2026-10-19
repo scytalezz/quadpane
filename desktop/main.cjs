@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, screen } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, shell, screen } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -10,6 +10,8 @@ const { createExplorerActions, createMutationCoordinator, actionError, validateP
 const { createShellMenuService } = require('./shell-menu.cjs');
 const { shellErrorResult } = require('./shell-errors.cjs');
 const { createTaskbarIntegration } = require('./taskbar.cjs');
+const { createUpdateService } = require('./update-service.cjs');
+const { createUpdateFetch } = require('./update-fetch.cjs');
 const shellMenus = createShellMenuService(app.isPackaged
   ? path.join(process.resourcesPath, 'native', 'Quadpane.Shell.exe')
   : path.join(__dirname, 'native', 'bin', 'Quadpane.Shell.exe'));
@@ -53,6 +55,23 @@ try {
 app.enableSandbox();
 app.setAppUserModelId(applicationId);
 let mainWindow;
+let mainTaskbar;
+let updateRestartPending = false;
+let updateCheckTimer;
+const updateService = createUpdateService({
+  currentVersion: app.getVersion(),
+  portableDirectory,
+  enabled: app.isPackaged && process.platform === 'win32' && process.arch === 'x64'
+    && typeof portableDirectory === 'string' && path.isAbsolute(portableDirectory)
+    && typeof process.env.PORTABLE_EXECUTABLE_FILE === 'string'
+    && path.dirname(process.env.PORTABLE_EXECUTABLE_FILE) === portableDirectory,
+  fetch: createUpdateFetch(net),
+  onChange: state => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+      mainWindow.webContents.send('pane:update-state-changed', state);
+    }
+  },
+});
 const sessionStore = createSessionStore(dataDirectory);
 const preferencesStore = createPreferencesStore(dataDirectory);
 const transferService = createTransferService();
@@ -72,6 +91,10 @@ function closeShellMenus() {
 }
 
 function applicationErrorResult(error, channel) {
+  if (channel.startsWith('pane:update-')) {
+    return { ok: false, error: { code: error?.code || 'UPDATE_FAILED',
+      message: error?.message || '업데이트를 완료하지 못했습니다. 다시 시도해 주세요.' } };
+  }
   const shellResult = shellErrorResult(error, channel);
   if (shellResult) return shellResult;
   if (['INVALID_PREFERENCES', 'PREFERENCES_WRITE_FAILED'].includes(error?.code)) {
@@ -89,15 +112,41 @@ function registerFileAccess() {
         || event.senderFrame.url !== indexURL) {
         return errorResult({ code: 'FORBIDDEN' });
       }
+      if (updateRestartPending && (explorerChannels.has(channel)
+        || ['pane:transfer', 'pane:shell-menu', 'pane:read-shell-clipboard', 'pane:write-shell-clipboard', 'pane:complete-shell-paste'].includes(channel))) {
+        throw Object.assign(new Error('업데이트를 위해 다시 시작하는 중입니다.'), { code: 'ACTION_BUSY' });
+      }
       return { ok: true, value: await action(...args) };
     } catch (error) { return applicationErrorResult(error, channel); }
   });
   handle('pane:bootstrap', async () => ({
+    update: updateService.getState(),
     drives: await discoverDrives(),
     favorites: getFavorites(name => app.getPath(name)),
     ...sessionStore.load(),
     ...preferencesStore.load(),
   }));
+  handle('pane:update-state', () => updateService.getState());
+  handle('pane:update-check', () => updateService.check());
+  handle('pane:update-download', () => updateService.download());
+  handle('pane:update-install', async () => {
+    if (updateRestartPending || mutations.pending || shellMenus.pending) {
+      throw Object.assign(new Error('진행 중인 파일 작업을 마친 뒤 다시 시도해 주세요.'), { code: 'UPDATE_BUSY' });
+    }
+    updateRestartPending = true;
+    try {
+      const executable = await updateService.verifyReady();
+      // Relaunch the verified portable launcher, preserving the adjacent data
+      // directory. Electron starts it only after this instance has exited.
+      app.relaunch({ execPath: executable, args: [] });
+      try { mainTaskbar?.retargetPins(executable); } catch { /* Shortcut migration is nonfatal. */ }
+      setImmediate(() => app.quit());
+      return { restarting: true };
+    } catch (error) {
+      updateRestartPending = false;
+      throw error;
+    }
+  });
   handle('pane:list-directory', (directory, options) => listDirectory(directory, { accurate: options?.accurate === true }));
   handle('pane:save-session', session => sessionStore.save(session));
   handle('pane:save-preferences', preferences => preferencesStore.save(preferences));
@@ -117,7 +166,13 @@ function registerFileAccess() {
     const files = validatePaths(request?.sources);
     return shellMenus.show({ parent: path.win32.dirname(files[0]), paths: files, operation: request.operation }, {}, 'writeClipboard');
   });
-  handle('pane:cancel-shell', () => {shellMenus.cancel();return null;});
+  handle('pane:cancel-shell', async () => {
+    const stopped = await shellMenus.cancel();
+    if (stopped?.some(result => !result.exited)) {
+      throw Object.assign(new Error('Previous Windows shell helper has not exited'), { code: 'SHELL_RECOVERY_FAILED' });
+    }
+    return null;
+  });
   handle('pane:shell-menu', request => mutations.run(async () => {
     const window = mainWindow;
     const bounds = window.getContentBounds();
@@ -145,6 +200,7 @@ function createWindow() {
     iconSource: path.join(__dirname, 'quadpane.ico'), applicationId, shell,
     smokeTest: app.commandLine.hasSwitch('pane-smoke-test'),
   }) : null;
+  mainTaskbar = taskbar;
   const window = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -237,10 +293,15 @@ if (!app.requestSingleInstanceLock()) {
     registerFileAccess();
     shellMenus.start(); // Warm STA helper before the user begins a short drag gesture.
     createWindow();
+    if (!app.commandLine.hasSwitch('pane-smoke-test') && updateService.getState().status !== 'unsupported') {
+      updateCheckTimer = setTimeout(() => { updateService.check().catch(() => {}); }, 10000);
+      updateCheckTimer.unref();
+    }
   });
   app.on('window-all-closed', () => app.quit());
   app.on('will-quit', closeShellMenus);
   app.on('will-quit', closeDirectoryReader);
+  app.on('will-quit', () => { clearTimeout(updateCheckTimer); updateService.close(); });
   app.on('before-quit', event => {
     if (shellMenus.pending) shellMenus.cancel();
     if (mutations.pending) {
@@ -255,6 +316,8 @@ if (!app.requestSingleInstanceLock()) {
     event.preventDefault();
     if (quitAfterShell) return;
     quitAfterShell = true;
-    closeShellMenus().then(() => { shellShutdownComplete = true; app.quit(); });
+    clearTimeout(updateCheckTimer);
+    Promise.allSettled([closeShellMenus(), updateService.close()])
+      .then(() => { shellShutdownComplete = true; app.quit(); });
   });
 }

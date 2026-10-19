@@ -30,6 +30,8 @@ function missing(fs, filename) {
  * Returns null for development, non-Windows, or untrustworthy launcher paths.
  * apply(window) is nonfatal and returns { applied, repaired }. Smoke runs never
  * inspect or change pins. An EXE fallback is shell metadata, not a window image.
+ * retargetPins(nextExecutable) returns a migration count; call only after update
+ * verification and successful relaunch scheduling, before quitting.
  */
 function createTaskbarIntegration({
   isPackaged = false, platform = process.platform, env = process.env,
@@ -75,10 +77,14 @@ function createTaskbarIntegration({
     relaunchCommand: `"${executablePath}"`, relaunchDisplayName: 'Quadpane',
   };
 
+  function pinDirectory() {
+    return pinnedDirectory ?? (absolutePath(env.APPDATA)
+      ? path.join(env.APPDATA, 'Microsoft', 'Internet Explorer', 'Quick Launch', 'User Pinned', 'TaskBar') : undefined);
+  }
+
   function repairPins() {
     if (smokeTest || !shell?.readShortcutLink || !shell?.writeShortcutLink) return 0;
-    const directory = pinnedDirectory ?? (absolutePath(env.APPDATA)
-      ? path.join(env.APPDATA, 'Microsoft', 'Internet Explorer', 'Quick Launch', 'User Pinned', 'TaskBar') : undefined);
+    const directory = pinDirectory();
     if (!absolutePath(directory)) return 0;
     let entries;
     try { entries = fs.readdirSync(directory); }
@@ -108,8 +114,43 @@ function createTaskbarIntegration({
     return repaired;
   }
 
+  function retargetPins(nextExecutable) {
+    if (smokeTest || !shell?.readShortcutLink || !shell?.writeShortcutLink) return 0;
+    if (!absolutePath(nextExecutable) || path.extname(nextExecutable).toLowerCase() !== '.exe'
+      || samePath(nextExecutable, executablePath)
+      || !samePath(path.dirname(nextExecutable), path.dirname(executablePath))) return 0;
+    try { if (!fs.statSync(nextExecutable).isFile()) return 0; }
+    catch { return 0; }
+
+    const directory = pinDirectory();
+    if (!absolutePath(directory)) return 0;
+    let entries;
+    try { entries = fs.readdirSync(directory); }
+    catch { return 0; }
+    let migrated = 0;
+    for (const name of entries) {
+      if (path.extname(name).toLowerCase() !== '.lnk') continue;
+      try {
+        const filename = path.join(directory, name);
+        const link = shell.readShortcutLink(filename);
+        // An explicit update migrates only pins targeting this original launcher.
+        // Broken/extracted targets belong exclusively to startup repair.
+        if (link.appUserModelId !== applicationId || !absolutePath(link.target)
+          || !samePath(link.target, executablePath)) continue;
+        const changes = { target: nextExecutable, icon: windowIcon || nextExecutable, iconIndex: 0 };
+        if (!link.cwd || (absolutePath(link.cwd) && (samePath(link.cwd, path.dirname(executablePath))
+          || (extractionDirectory && samePath(link.cwd, extractionDirectory)) || missing(fs, link.cwd)))) {
+          changes.cwd = path.dirname(nextExecutable);
+        }
+        // Keep custom properties and the old EXE; never create or replace pins.
+        if (shell.writeShortcutLink(filename, 'update', changes)) migrated++;
+      } catch { /* Pin migration must never prevent the scheduled restart. */ }
+    }
+    return migrated;
+  }
+
   return {
-    executablePath, iconPath, windowIcon, appDetails,
+    executablePath, iconPath, windowIcon, appDetails, retargetPins,
     apply(window) {
       let applied = false;
       try { window.setAppDetails(appDetails); applied = true; }

@@ -16,6 +16,16 @@ contextBridge.exposeInMainWorld('pane', Object.freeze({
     return () => { ipcRenderer.removeListener('pane:navigate-forward', listener); };
   },
   bootstrap: () => ipcRenderer.invoke('pane:bootstrap'),
+  updateState: () => ipcRenderer.invoke('pane:update-state'),
+  checkForUpdates: () => ipcRenderer.invoke('pane:update-check'),
+  downloadUpdate: () => ipcRenderer.invoke('pane:update-download'),
+  installUpdate: () => ipcRenderer.invoke('pane:update-install'),
+  onUpdateState: callback => {
+    if (typeof callback !== 'function') throw new TypeError('Update callback must be a function');
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('pane:update-state-changed', listener);
+    return () => { ipcRenderer.removeListener('pane:update-state-changed', listener); };
+  },
   listDirectory: (path, options) => ipcRenderer.invoke('pane:list-directory', path, { accurate: options?.accurate === true }),
   saveSession: session => ipcRenderer.invoke('pane:save-session', session),
   savePreferences: preferences => ipcRenderer.invoke('pane:save-preferences', preferences),

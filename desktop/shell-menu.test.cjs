@@ -35,7 +35,7 @@ test('cancel releases a hung shell request; late events cannot reject a replacem
   const service = createShellMenuService('fake.exe', { spawn() {
     const worker = new EventEmitter();
     worker.stdin = new PassThrough(); worker.stdout = new PassThrough(); worker.stderr = new PassThrough();
-    worker.kill = () => { worker.killed = true; };
+    worker.kill = () => { worker.killed = true; queueMicrotask(() => worker.emit('exit', 1)); };
     workers.push(worker); return worker;
   } });
   const pending = service.show({ parent: folder, paths: [first] }, {});

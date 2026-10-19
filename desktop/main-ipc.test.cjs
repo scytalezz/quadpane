@@ -19,9 +19,20 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 const preventable = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
 
 async function harness({ close = () => undefined, transfer = async request => request,
-  isPackaged = false, platform = 'win32', smokeTest = true, env = {} } = {}) {
+  cancelResult = () => undefined,
+  isPackaged = false, platform = 'win32', smokeTest = true, env = {}, updateClose = () => undefined,
+  verifyReady = async () => 'D:\\portable\\quadpane-0.10.0-portable-x64.exe' } = {}) {
   const handlers = new Map(), requests = [], lifecycle = [];
   const taskbarOptions = [];
+  let updateOptions;
+  const updateCalls = [], sent = [], timers = [];
+  const updateService = {
+    getState: () => ({ currentVersion: '0.9.0', status: updateOptions.enabled ? 'idle' : 'unsupported' }),
+    async check() { updateCalls.push('check'); return this.getState(); },
+    async download() { updateCalls.push('download'); return this.getState(); },
+    async verifyReady() { updateCalls.push('verify'); return verifyReady(); },
+    close() { updateCalls.push('close'); return updateClose(); },
+  };
   const mutations = createMutationCoordinator();
   let active, window;
   const cancel = () => {
@@ -37,12 +48,13 @@ async function harness({ close = () => undefined, transfer = async request => re
       requests.push({ request, host, mode });
       return active.promise;
     },
-    cancel() { lifecycle.push('cancel'); cancel(); },
+    cancel() { lifecycle.push('cancel'); cancel(); return cancelResult(); },
     close() { lifecycle.push('close'); cancel(); return close(); },
   };
   const app = Object.assign(new EventEmitter(), {
     isPackaged, commandLine: { hasSwitch: name => name === 'pane-smoke-test' && smokeTest },
-    setPath() {}, enableSandbox() {}, setAppUserModelId() {},
+    setPath() {}, enableSandbox() {}, setAppUserModelId() {}, getVersion: () => '0.9.0',
+    relaunches: [], relaunch(options) { this.relaunches.push(options); },
     requestSingleInstanceLock: () => true, whenReady: () => Promise.resolve(),
     quitCalls: 0, quit() { this.quitCalls++; },
   });
@@ -54,6 +66,7 @@ async function harness({ close = () => undefined, transfer = async request => re
       this.webContents = Object.assign(new EventEmitter(), {
         mainFrame: { url: pathToFileURL(path.join(__dirname, '..', 'index.html')).href },
         setWindowOpenHandler() {}, isDestroyed: () => false,
+        send: (...args) => sent.push(args),
         session: Object.assign(new EventEmitter(), { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} }),
       });
     }
@@ -82,14 +95,17 @@ async function harness({ close = () => undefined, transfer = async request => re
       return { windowIcon: 'D:\\portable\\quadpane-data\\taskbar\\quadpane.ico',
         apply(target) { target.setAppDetails({ appId: options.applicationId }); } };
     } },
+    './update-service.cjs': { createUpdateService(options) { updateOptions = options; return updateService; } },
   };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8'), {
     require: name => Object.hasOwn(mocks, name) ? mocks[name] : require(name),
-    __dirname, process: { env, pid: 123, platform, execPath: process.execPath, resourcesPath: 'C:\\extracted\\resources' },
+    __dirname, setImmediate, clearTimeout,
+    setTimeout(callback, delay) { timers.push({ callback, delay }); return { unref() {} }; },
+    process: { env, pid: 123, platform, arch: 'x64', execPath: process.execPath, resourcesPath: 'C:\\extracted\\resources' },
   }, { filename: 'main.cjs' });
   await tick();
   const invoke = (channel, ...args) => handlers.get(channel)({ sender: window.webContents, senderFrame: window.webContents.mainFrame }, ...args);
-  return { app, window, invoke, mutations, requests, lifecycle, taskbarOptions };
+  return { app, window, invoke, mutations, requests, lifecycle, taskbarOptions, updateOptions, updateCalls, sent, handlers, timers };
 }
 
 test('directory IPC forwards only explicit accurate mode', async () => {
@@ -100,6 +116,111 @@ test('directory IPC forwards only explicit accurate mode', async () => {
     assert.equal(result.value.directory, 'C:\\fixture');
     assert.equal(result.value.accurate, expected);
   }
+});
+
+test('cancel IPC acknowledges actual helper exit and reports failed cleanup', async () => {
+  const exit = deferred();
+  const f = await harness({ cancelResult: () => exit.promise });
+  let settled = false;
+  const cancellation = f.invoke('pane:cancel-shell').then(value => { settled = true; return value; });
+  await tick();
+  assert.equal(settled, false);
+  exit.resolve([{ exited: true }]);
+  assert.equal((await cancellation).ok, true);
+  const failed = await harness({ cancelResult: async () => [{ exited: false }] });
+  const result = await failed.invoke('pane:cancel-shell');
+  assert.equal(result.error.code, 'SHELL_RECOVERY_FAILED');
+  assert.match(result.error.message, /종료를 확인하지 못해/);
+});
+
+test('update IPC publishes the app version, isolates events and rejects untrusted senders', async () => {
+  const f = await harness();
+  assert.equal((await f.invoke('pane:update-state')).value.currentVersion, '0.9.0');
+  const state = { currentVersion: '0.9.0', status: 'available' };
+  f.updateOptions.onChange(state);
+  assert.equal(f.sent[0][0], 'pane:update-state-changed');
+  assert.equal(f.sent[0][1], state);
+  for (const channel of ['pane:update-state', 'pane:update-check', 'pane:update-download', 'pane:update-install']) {
+    for (const event of [
+      { sender: {}, senderFrame: f.window.webContents.mainFrame },
+      { sender: f.window.webContents, senderFrame: { url: f.window.webContents.mainFrame.url } },
+    ]) assert.equal((await f.handlers.get(channel)(event)).error.code, 'FORBIDDEN');
+  }
+  assert.deepEqual(f.updateCalls, []);
+});
+
+test('only packaged portable startup schedules a delayed check, and smoke runs stay offline', async () => {
+  const env = { PORTABLE_EXECUTABLE_DIR: 'D:\\portable', PORTABLE_EXECUTABLE_FILE: 'D:\\portable\\Quadpane.exe' };
+  const f = await harness({ isPackaged: true, smokeTest: false, env });
+  assert.equal(f.updateOptions.enabled, true);
+  assert.equal(f.timers.length, 1);
+  assert.equal(f.timers[0].delay, 10000);
+  assert.deepEqual(f.updateCalls, []);
+  f.timers[0].callback(); await tick();
+  assert.deepEqual(f.updateCalls, ['check']);
+  for (const options of [{}, { isPackaged: true }, { isPackaged: true, env, smokeTest: true }]) {
+    const isolated = await harness(options);
+    assert.equal(isolated.timers.length, 0);
+  }
+  f.app.emit('will-quit'); await tick();
+  assert.ok(f.updateCalls.includes('close'));
+});
+
+test('update waits for file operations and native shell work before allowing restart', async () => {
+  const moving = deferred();
+  const f = await harness({ transfer: () => moving.promise });
+  const transfer = f.invoke('pane:transfer', {});
+  assert.equal((await f.invoke('pane:update-install')).error.code, 'UPDATE_BUSY');
+  moving.resolve({}); await transfer;
+  const drag = f.invoke('pane:begin-native-drag', ['C:\\fixture\\file.txt']);
+  assert.equal((await f.invoke('pane:update-install')).error.code, 'UPDATE_BUSY');
+  await f.invoke('pane:cancel-shell'); await drag;
+  assert.deepEqual(f.updateCalls, []);
+  assert.equal(f.app.relaunches.length, 0);
+});
+
+test('restart verifies its internal target once, prevents new work, and preserves graceful quit', async () => {
+  const verification = deferred();
+  const f = await harness({ verifyReady: () => verification.promise });
+  const installing = f.invoke('pane:update-install', { path: 'C:\\untrusted.exe' });
+  assert.equal((await f.invoke('pane:update-install')).error.code, 'UPDATE_BUSY');
+  assert.equal((await f.invoke('pane:transfer', {})).error.code, 'ACTION_BUSY');
+  assert.equal((await f.invoke('pane:read-shell-clipboard')).error.code, 'ACTION_BUSY');
+  assert.equal(f.app.relaunches.length, 0);
+  verification.resolve('D:\\portable\\verified.exe');
+  assert.equal((await installing).ok, true);
+  assert.equal(f.app.relaunches[0].execPath, 'D:\\portable\\verified.exe');
+  assert.equal(f.app.relaunches[0].args.length, 0);
+  await tick();
+  assert.equal(f.app.quitCalls, 1);
+  assert.deepEqual(f.updateCalls, ['verify']);
+});
+
+test('failed verification leaves the current app usable and permits retry', async () => {
+  let attempts = 0;
+  const f = await harness({ verifyReady: async () => {
+    if (++attempts === 1) throw Object.assign(new Error('파일 검증 실패'), { code: 'UPDATE_INTEGRITY' });
+    return 'D:\\portable\\verified.exe';
+  } });
+  assert.equal((await f.invoke('pane:update-install')).error.code, 'UPDATE_INTEGRITY');
+  assert.equal(f.app.relaunches.length, 0);
+  assert.equal((await f.invoke('pane:transfer', {})).ok, true);
+  assert.equal((await f.invoke('pane:update-install')).ok, true);
+  await tick();
+  assert.equal(f.app.relaunches.length, 1);
+});
+
+test('quit waits for partial update cleanup as well as shell shutdown', async () => {
+  const cleanup = deferred();
+  const f = await harness({ updateClose: () => cleanup.promise });
+  const event = preventable();
+  f.app.emit('before-quit', event); await tick();
+  assert.equal(event.prevented, true);
+  assert.equal(f.app.quitCalls, 0);
+  cleanup.resolve(); await tick();
+  assert.equal(f.app.quitCalls, 1);
+  const final = preventable(); f.app.emit('before-quit', final);
+  assert.equal(final.prevented, false);
 });
 
 test('packaged Windows applies persistent taskbar details before first show', async () => {

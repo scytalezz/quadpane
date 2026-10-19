@@ -19,7 +19,7 @@ function handlersFor(error) {
   const handlers = new Map();
   const webContents = { mainFrame: { url: require('node:url').pathToFileURL(path.join(__dirname, '..', 'index.html')).href }, getZoomFactor: () => 1 };
   const app = { isPackaged: false, setPath() {}, exit() {}, enableSandbox() {}, setAppUserModelId() {},
-    requestSingleInstanceLock: () => false, quit() {} };
+    requestSingleInstanceLock: () => false, quit() {}, getVersion: () => '0.9.0' };
   const context = {
     __dirname, process, console, Buffer,
     require(name) {
@@ -46,7 +46,7 @@ function requestFor(channel) {
 }
 
 test('all actual shell IPC handlers preserve codes and native details with Korean operation messages', async () => {
-  for (const code of ['SHELL_BUSY', 'SHELL_CANCELLED', 'SHELL_HELPER_EXITED', 'SHELL_NATIVE_ERROR', 'EACCES']) {
+  for (const code of ['SHELL_BUSY', 'SHELL_CANCELLED', 'SHELL_HELPER_EXITED', 'SHELL_RECOVERY_FAILED', 'SHELL_NATIVE_ERROR', 'EACCES']) {
     const native = 'COM failure 0x800401D0';
     const ipc = handlersFor(Object.assign(new Error(native), { code, nativeError: native, hresult: -2147221040 }));
     for (const [channel, operation] of Object.entries(channels)) {

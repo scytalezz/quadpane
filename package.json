@@ -1,6 +1,6 @@
 {
   "name": "quadpane",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "private": true,
   "description": "Quadpane — a multi-pane file explorer for Windows, inspired by Q-Dir.",
   "license": "MIT",
@@ -36,6 +36,8 @@
       "theme.js",
       "desktop/main.cjs",
       "desktop/taskbar.cjs",
+      "desktop/update-service.cjs",
+      "desktop/update-fetch.cjs",
       "desktop/preload.cjs",
       "desktop/filesystem.cjs",
       "desktop/directory-service.cjs",

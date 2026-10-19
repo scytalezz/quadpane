@@ -12,7 +12,11 @@ function fixture(t, options = {}) {
     const worker = new EventEmitter();
     worker.stdin = new PassThrough(); worker.stdout = new PassThrough(); worker.stderr = new PassThrough();
     worker.stdin.on('data', data => sent.push({ worker, ...JSON.parse(data) }));
-    worker.kill = () => { worker.killed = true; worker.killCount = (worker.killCount || 0) + 1; return true; };
+    worker.kill = () => {
+      worker.killed = true; worker.killCount = (worker.killCount || 0) + 1;
+      if (options.exitOnKill !== false) queueMicrotask(() => worker.emit('exit', 1));
+      return true;
+    };
     workers.push(worker);
     return worker;
   } });
@@ -397,21 +401,22 @@ test('clipboard cannot escape its deadline using an interactive phase', async t 
 });
 
 test('idle close has a bounded kill fallback, then process exit retries every owned live helper', async t => {
-  const timers = fakeTimers(), f = fixture(t, { timers, timeouts: shortTimeouts });
+  const timers = fakeTimers(), f = fixture(t, { timers, timeouts: shortTimeouts, exitOnKill: false });
   f.service.start();
   const old = f.workers[0];
   f.service.cancel();
+  old.emit('exit', 1);
   f.service.start();
   const current = f.workers[1];
   const closing = f.service.close();
   assert.equal(current.stdin.writableEnded, true);
   assert.equal(current.killed, undefined);
   timers.advance(30);
-  assert.deepEqual(await bounded(closing), [{ exited: false }, { exited: false }]);
+  assert.deepEqual(await bounded(closing), [{ exited: false }]);
   assert.equal(current.killed, true);
   const kills = f.workers.map(worker => worker.killCount);
   f.lifecycle.emit('exit');
-  assert.equal(old.killCount, kills[0] + 1);
+  assert.equal(old.killCount, kills[0]);
   assert.equal(current.killCount, kills[1] + 1);
 });
 
@@ -500,6 +505,83 @@ test('a failed spawn close event removes ownership without waiting for a nonexis
   await bounded(rejected);
   assert.equal(f.lifecycle.listenerCount('exit'), 0);
   assert.deepEqual(await bounded(f.service.close()), []);
+});
+
+test('a cancelled drag cannot start a replacement until the old helper actually exits', async t => {
+  const f = fixture(t, { exitOnKill: false });
+  const cancelled = assert.rejects(f.show('drag'), { code: 'SHELL_CANCELLED' });
+  await f.waitFor(1);
+  const old = f.workers[0];
+  const cancelling = f.service.cancel();
+  await cancelled;
+  const next = f.show('readClipboard');
+  next.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.workers.length, 1, 'SIGKILL acceptance is not confirmation that mouse capture was released');
+  assert.equal(f.sent.length, 1);
+  old.emit('exit', 1);
+  await cancelling;
+  await f.waitFor(2);
+  f.reply(1, 'recovered');
+  assert.equal(await bounded(next), 'recovered');
+});
+
+test('a warm helper exiting during path validation does not fail an unsent drag', async t => {
+  let complete;
+  const f = fixture(t, { validate: () => new Promise(resolve => { complete = resolve; }) });
+  f.service.start();
+  const request = f.show('drag');
+  request.catch(() => {});
+  await new Promise(resolve => setImmediate(resolve));
+  f.workers[0].emit('exit', 1);
+  assert.equal(f.service.pending, true);
+  complete({ parent: __dirname, paths: [] });
+  await f.waitFor(1);
+  assert.equal(f.workers.length, 2);
+  f.reply(0, { action: 'cancel' });
+  assert.deepEqual(await bounded(request), { action: 'cancel' });
+});
+
+test('failed cleanup stays owned and blocks a second helper until exit is confirmed', async t => {
+  const timers = fakeTimers(), f = fixture(t, { timers, timeouts: { ...shortTimeouts, validationMs: 100 }, exitOnKill: false });
+  f.service.start();
+  const old = f.workers[0];
+  const cancelling = f.service.cancel();
+  const blocked = assert.rejects(f.show('readClipboard'), { code: 'SHELL_RECOVERY_FAILED' });
+  await new Promise(resolve => setImmediate(resolve));
+  timers.advance(30);
+  assert.deepEqual(await bounded(cancelling), [{ exited: false }]);
+  await bounded(blocked);
+  assert.equal(f.workers.length, 1);
+  assert.equal(f.sent.length, 0, 'No file operation is replayed or dispatched during failed cleanup');
+  assert.equal(f.service.pending, false);
+  assert.equal(old.stdin.destroyed, true);
+  assert.equal(f.lifecycle.listenerCount('exit'), 1);
+  old.emit('exit', 1);
+  const next = f.show('readClipboard');
+  await f.waitFor(1);
+  f.reply(0, 'recovered');
+  assert.equal(await bounded(next), 'recovered');
+});
+
+for (const [mode, phase, exitCode, code] of [
+  ['drag', 'interactive', 2, 'SHELL_CANCELLED'],
+  ['drag', 'committing', 2, 'SHELL_HELPER_EXITED'],
+  ['drag', 'interactive', 1, 'SHELL_HELPER_EXITED'],
+  ['show', 'interactive', 2, 'SHELL_HELPER_EXITED'],
+]) test(`${mode}/${phase} exit ${exitCode} reports ${code} without replay`, async t => {
+  const f = fixture(t);
+  const rejected = assert.rejects(f.show(mode), { code, exitCode });
+  await f.waitFor(1);
+  f.workers[0].stdout.write(JSON.stringify({ id: f.sent[0].id, phase }) + '\n');
+  f.workers[0].emit('exit', exitCode, null);
+  await rejected;
+  assert.equal(f.service.pending, false);
+  assert.equal(f.sent.length, 1);
+  const next = f.show('readClipboard');
+  await f.waitFor(2);
+  f.reply(1, 'fresh');
+  assert.equal(await next, 'fresh');
 });
 
 test('process.exit executes the ownership kill hook even when graceful shutdown timers cannot run', () => {

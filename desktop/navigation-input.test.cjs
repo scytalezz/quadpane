@@ -39,7 +39,7 @@ function mainWindowForTest() {
     loadFile() { return Promise.resolve(); }
   }
   const app = { isPackaged: false, setPath() {}, exit() {}, enableSandbox() {}, setAppUserModelId() {},
-    requestSingleInstanceLock: () => false, quit() {} };
+    requestSingleInstanceLock: () => false, quit() {}, getVersion: () => '0.9.0' };
   const createWindow = vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8') + '\ncreateWindow;', {
     __dirname, process, console, Buffer,
     require(name) {
@@ -75,6 +75,26 @@ function emitMouse(window, input) {
   window.webContents.emit('before-mouse-event', event, Object.freeze(input), 'untrusted payload');
   return event;
 }
+
+test('preload update methods accept no renderer paths and update listeners hide Electron events', async () => {
+  const { pane, ipcRenderer } = preloadForTest();
+  const calls = [];
+  ipcRenderer.invoke = async (...args) => { calls.push(args); return { ok: true }; };
+  for (const [method, channel] of [['updateState', 'pane:update-state'], ['checkForUpdates', 'pane:update-check'],
+    ['downloadUpdate', 'pane:update-download'], ['installUpdate', 'pane:update-install']]) {
+    await pane[method]({ path: 'C:\\untrusted.exe' });
+    assert.deepEqual(calls.at(-1), [channel]);
+  }
+  const observed = [];
+  const remove = pane.onUpdateState((...args) => observed.push(args));
+  const state = { currentVersion: '0.9.0', status: 'ready' };
+  ipcRenderer.emit('pane:update-state-changed', { sender: 'private' }, state, 'extra');
+  assert.deepEqual(observed, [[state]]);
+  remove(); remove();
+  ipcRenderer.emit('pane:update-state-changed', {}, state);
+  assert.equal(observed.length, 1);
+  assert.throws(() => pane.onUpdateState(null), /callback/);
+});
 
 test('actual main window leaves unrelated mouse buttons and event types unchanged', () => {
   const { window, sent } = mainWindowForTest();

@@ -64,6 +64,52 @@ function createShellMenuService(executable, options = {}) {
     // Target only the ChildProcess created here, never Explorer or a PID lookup.
     try { return worker.kill('SIGKILL') !== false; } catch { return false; }
   }
+  function stop(worker, graceful = false) {
+    const owned = workers.get(worker);
+    if (!owned) return Promise.resolve({ exited: true });
+    if (owned.stopping) return owned.stopping;
+    const stopping = new Promise(resolve => {
+      let finished = false, timer;
+      const finish = exited => {
+        if (finished) return;
+        finished = true;
+        timers.clearTimeout(timer);
+        worker.removeListener('exit', exitedHandler);
+        worker.removeListener('close', exitedHandler);
+        resolve({ exited });
+      };
+      const exitedHandler = () => finish(true);
+      worker.once('exit', exitedHandler);
+      worker.once('close', exitedHandler);
+      timer = timers.setTimeout(() => {
+        if (finished) return;
+        // End our pipe as well, so the helper's independent EOF watchdog can
+        // release a blocked native drag even if process termination failed.
+        try { worker.stdin.destroy(); } catch { /* Keep the ownership hook. */ }
+        kill(worker);
+        finish(false);
+      }, timeouts.shutdownMs);
+      if (graceful) {
+        try { worker.stdin.end(); } catch { kill(worker); }
+      } else {
+        try { worker.stdin.end(); } catch { /* Still attempt termination. */ }
+        kill(worker);
+      }
+    });
+    owned.stopping = stopping;
+    // A failed termination stays owned. A later gesture can try cleanup again,
+    // but cannot start another OLE loop until this process has really exited.
+    stopping.then(() => { if (owned.stopping === stopping) owned.stopping = undefined; });
+    return stopping;
+  }
+  async function recover() {
+    const retired = [...workers.keys()].filter(worker => worker !== child);
+    if (!retired.length) return;
+    await Promise.all(retired.map(worker => stop(worker)));
+    if (retired.some(worker => workers.has(worker))) {
+      throw failure('SHELL_RECOVERY_FAILED', 'Previous Windows shell helper has not exited');
+    }
+  }
   function onProcessExit() {
     closed = true;
     child = undefined;
@@ -74,9 +120,9 @@ function createShellMenuService(executable, options = {}) {
   function retire(worker, error) {
     if (child !== worker) return;
     child = undefined;
-    rejectAll(error);
+    if (pending?.worker === worker) rejectAll(error);
     workers.get(worker)?.lines.close();
-    kill(worker);
+    stop(worker);
   }
   function settle(error, value) {
     const item = pending;
@@ -94,8 +140,9 @@ function createShellMenuService(executable, options = {}) {
       // clearTimeout alone is insufficient if its callback was already queued.
       if (pending !== item || item.deadline !== deadline) return;
       const error = failure('SHELL_TIMEOUT', `Windows shell ${phase} exceeded ${timeoutMs}ms`, { timeoutMs });
-      if (child) retire(child, error);
-      else rejectAll(error);
+      const worker = child;
+      rejectAll(error);
+      if (worker) retire(worker, error);
     }, timeoutMs);
   }
   function progress(item, phase) {
@@ -116,14 +163,18 @@ function createShellMenuService(executable, options = {}) {
     const { request, host, mode, id } = item;
     item.validation = new AbortController();
     arm(item, 'validation', timeouts.validationMs);
-    Promise.resolve().then(() => {
+    Promise.resolve().then(async () => {
+      await recover();
       if (pending !== item) return;
       return ['readClipboard', 'completePaste'].includes(mode) ? {} :
         (options.validate || validateMenuRequest)(request, { signal: item.validation.signal });
-    }).then(validated => {
+    }).then(async validated => {
+      if (pending !== item) return;
+      await recover();
       if (pending !== item) return;
       try {
         const payload = `${JSON.stringify({ ...validated, ...host, mode, id, operation: request?.operation, reportProgress: true })}\n`;
+        // A warm helper may have failed while filesystem validation was pending.
         start();
         const worker = item.worker = child;
         arm(item, clipboardModes.has(mode) ? 'clipboard' : 'worker', clipboardModes.has(mode) ? timeouts.clipboardMs : timeouts.workerMs);
@@ -137,6 +188,7 @@ function createShellMenuService(executable, options = {}) {
   function start() {
     if (closed) throw failure('SHELL_CLOSED', 'Windows shell service closed');
     if (child) return;
+    if (workers.size) throw failure('SHELL_RECOVERY_FAILED', 'Previous Windows shell helper has not exited');
     const worker = (options.spawn || spawn)(executable, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     child = worker;
     const lines = createInterface({ input: worker.stdout });
@@ -171,7 +223,14 @@ function createShellMenuService(executable, options = {}) {
       if (!workers.size) lifecycle.removeListener('exit', onProcessExit);
       if (child === worker) {
         child = undefined;
-        rejectAll(failure('SHELL_HELPER_EXITED', 'Windows shell helper exited', { exitCode, signal }));
+        if (pending?.worker === worker) {
+          // Exit 2 is reserved by the native watchdog for a drag that never
+          // committed a drop. Other exits (and any committing operation) remain
+          // failures: never hide a crash or automatically replay file work.
+          const cancelledDrag = exitCode === 2 && !signal && pending.mode === 'drag' && pending.phase !== 'committing';
+          rejectAll(failure(cancelledDrag ? 'SHELL_CANCELLED' : 'SHELL_HELPER_EXITED',
+            cancelledDrag ? 'Uncommitted Windows drag cancelled' : 'Windows shell helper exited', { exitCode, signal }));
+        }
       }
     }
     worker.once('exit', exited);
@@ -200,7 +259,7 @@ function createShellMenuService(executable, options = {}) {
       rejectAll(failure('SHELL_CANCELLED', 'Windows shell operation cancelled'));
       if (worker) workers.get(worker)?.lines.close();
       // Retry termination of any retired helper that has not emitted exit yet.
-      for (const owned of workers.keys()) kill(owned);
+      return Promise.all([...workers.keys()].map(owned => stop(owned)));
     },
     close() {
       if (closing) return closing;
@@ -212,29 +271,7 @@ function createShellMenuService(executable, options = {}) {
       // Callers can await graceful clipboard flushing. Keep the fallback timer
       // referenced, and keep owned workers in the exit hook until actual exit.
       // A pending UI/COM call cannot reliably process EOF: kill it immediately.
-      closing = Promise.all([...workers.keys()].map(owned => new Promise(resolve => {
-        let finished = false, timer;
-        const finish = exited => {
-          if (finished) return;
-          finished = true;
-          timers.clearTimeout(timer);
-          owned.removeListener('exit', exitedHandler);
-          owned.removeListener('close', exitedHandler);
-          resolve({ exited });
-        };
-        const exitedHandler = () => finish(true);
-        owned.once('exit', exitedHandler);
-        owned.once('close', exitedHandler);
-        timer = timers.setTimeout(() => {
-          if (finished) return;
-          kill(owned);
-          finish(false);
-        }, timeouts.shutdownMs);
-        if (active || owned !== worker) kill(owned);
-        else {
-          try { owned.stdin.end(); } catch { kill(owned); }
-        }
-      })));
+      closing = Promise.all([...workers.keys()].map(owned => stop(owned, !active && owned === worker)));
       return closing;
     },
   };

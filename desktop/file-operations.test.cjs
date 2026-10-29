@@ -221,7 +221,8 @@ test('cross-volume tree uses its existing single-process path directly without p
 
 test('copy publication and file/directory moves support paths longer than MAX_PATH', async () => {
   const f = await fixture();
-  const destination = path.join(f.destination, ...Array(7).fill('long-directory-segment'));
+  // Exceed MAX_PATH even in a short CI checkout, with each component below 255.
+  const destination = path.join(f.destination, ...Array(3).fill('long-'.repeat(20)));
   await fs.mkdir(destination, { recursive: true });
   assert.ok(destination.length > 260);
   const file = path.join(f.source, 'long-path.txt');

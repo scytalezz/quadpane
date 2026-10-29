@@ -6,19 +6,28 @@ const { createInterface } = require('node:readline');
 const { mutationPath } = require('./file-operations.cjs');
 const { validatePaths } = require('./explorer-actions.cjs');
 
-async function validateMenuRequest(request, { signal } = {}) {
+function validateSelection(request, { signal } = {}) {
   signal?.throwIfAborted();
   if (!request || !Array.isArray(request.paths) || request.paths.length > 1000) throw new Error('Invalid shell selection');
   const parent = mutationPath(request.parent);
   const paths = request.paths.length ? validatePaths(request.paths) : [];
-  if (!(await fs.stat(parent)).isDirectory()) throw new Error('Shell menu requires a folder');
   for (const filename of paths) {
     signal?.throwIfAborted();
     if (path.win32.dirname(filename).toLowerCase() !== parent.toLowerCase()) throw new Error('Shell selection must share its parent');
-    await fs.lstat(filename);
   }
   signal?.throwIfAborted();
   return { parent, paths, extended: request.extended === true };
+}
+
+async function validateMenuRequest(request, options = {}) {
+  const selection = validateSelection(request, options);
+  if (!(await fs.stat(selection.parent)).isDirectory()) throw new Error('Shell menu requires a folder');
+  for (const filename of selection.paths) {
+    options.signal?.throwIfAborted();
+    await fs.lstat(filename);
+  }
+  options.signal?.throwIfAborted();
+  return selection;
 }
 
 const defaultTimeouts = Object.freeze({
@@ -166,8 +175,11 @@ function createShellMenuService(executable, options = {}) {
     Promise.resolve().then(async () => {
       await recover();
       if (pending !== item) return;
+      // The STA validates existence immediately before building the data object.
+      // Duplicating those reads here can consume a short drag gesture entirely.
+      const validate = options.validate || (mode === 'drag' ? validateSelection : validateMenuRequest);
       return ['readClipboard', 'completePaste'].includes(mode) ? {} :
-        (options.validate || validateMenuRequest)(request, { signal: item.validation.signal });
+        validate(request, { signal: item.validation.signal });
     }).then(async validated => {
       if (pending !== item) return;
       await recover();

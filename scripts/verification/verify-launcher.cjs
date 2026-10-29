@@ -141,6 +141,8 @@ async function launchAndCheck(executable, expectedTheme) {
   const native = await page.evaluate(() => window.pane.bootstrap());
   assert.equal(native.ok, true);
   assert.ok(native.value.drives.length > 0);
+  assert.equal(native.value.update.currentVersion, version, 'Packaged runtime version matches this release');
+  assert.ok((await page.locator('#app-version').textContent()).includes(version), 'Footer displays the release version');
   if (!restored) {
     await page.locator('#add-favorite-button').click();
     await page.waitForFunction(async location => (await window.pane.bootstrap()).value.preferences.favorites.some(item => item.path === location), folderPaths[0]);

@@ -10,6 +10,8 @@ const helpers = [
     references: ['System.Windows.Forms.dll', 'System.Drawing.dll', 'System.Web.Extensions.dll'] },
   { name: 'Quadpane.Directory.exe', source: 'DirectoryReader.cs', target: 'winexe',
     references: ['System.Web.Extensions.dll'] },
+  { name: 'Quadpane.Move.exe', source: 'FileMover.cs', target: 'winexe',
+    references: ['System.Web.Extensions.dll'] },
 ];
 for (const helper of helpers) {
   const result = spawnSync(compiler, ['/nologo', `/target:${helper.target}`, '/platform:x64', '/optimize+',

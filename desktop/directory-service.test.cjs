@@ -10,6 +10,32 @@ const { createDirectoryService, readerPath } = require('./directory-service.cjs'
 const entry = { name: '한글.txt', type: 'file', size: 3, modified: '2026-01-02T03:04:05.000Z', hidden: false };
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
+test('drive discovery reuses the directory worker without opening each volume', async t => {
+  const h = harness(); t.after(() => h.service.close());
+  const drives = h.service.drives();
+  const listing = h.service.list('C:\\folder');
+  const { child, args } = h.children[0];
+  assert.deepEqual(args, []);
+  assert.deepEqual(child.requests[0], { id: 1, mode: 'drives' });
+  child.respond({ id: 1, ok: true, roots: ['C:\\', 'D:\\'] });
+  assert.deepEqual(await drives, ['C:\\', 'D:\\']);
+  assert.equal(child.requests[1].path, path.win32.toNamespacedPath('C:\\folder'));
+  child.respond({ id: 2, ok: true, entries: [entry] });
+  assert.deepEqual(await listing, [entry]);
+  assert.equal(h.children.length, 1);
+});
+
+test('invalid drive roots fail closed rather than becoming sidebar paths', async () => {
+  for (const roots of [undefined, ['C:\\folder'], ['https://example.com'], Array(27).fill('C:\\')]) {
+    const h = harness();
+    try {
+      const rejected = assert.rejects(h.service.drives(), { code: 'DIRECTORY_READ_FAILED' });
+      h.children[0].child.respond({ id: 1, ok: true, roots });
+      await rejected;
+    } finally { h.service.close(); }
+  }
+});
+
 function harness(options = {}) {
   const children = [], timers = new Map();
   let nextTimer = 0;

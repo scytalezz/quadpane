@@ -35,7 +35,7 @@ let app;
     app = await _electron.launch({ executablePath: executable, args: ['--pane-smoke-test'], env, timeout: 30000 });
     const page = await app.firstWindow();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false));
-    await page.waitForFunction(() => document.querySelectorAll('.file-panel').length === 8 && [...document.querySelectorAll('.file-panel')].every(panel => panel.getAttribute('aria-busy') === 'false' && panel.querySelectorAll('[data-file]').length === 10));
+    await page.waitForFunction(() => document.querySelectorAll('.file-panel').length === 8 && [...document.querySelectorAll('.file-panel')].filter(panel => !panel.hidden).every(panel => panel.getAttribute('aria-busy') === 'false' && panel.querySelectorAll('[data-file]').length === 10));
     const result = { executable, readyMs: performance.now() - launch, samples: [] };
     for (const target of [folders[1], folders[0], folders[1], folders[0]]) {
       const sample = await page.evaluate(async target => {

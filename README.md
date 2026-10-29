@@ -2,8 +2,8 @@
 
 여러 폴더를 한 화면에 나란히 열고, 패널 사이에서 파일을 복사·이동하는 Windows 멀티패널 파일 탐색기입니다. [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir)의 멀티패널 개념을 현대적인 UI와 안전한 파일 작업으로 개선하는 것을 목표로 합니다.
 
-- 현재 버전: `0.9.1` (Windows x64 포터블 · 소스 기준 2026-10-19)
-- [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.9.1) · [v0.9.1 릴리스 노트](docs/releases/v0.9.1.md)
+- 현재 버전: `0.9.2` (Windows x64 포터블 · 소스 기준 2026-10-29)
+- [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.9.2) · [v0.9.2 릴리스 노트](docs/releases/v0.9.2.md)
 - 설치·관리자 권한·별도 Node.js 불필요 — 실행 파일 하나로 동작
 
 > **English** — *Quadpane* is a multi-pane file explorer for Windows, inspired by Q-Dir. It opens up to four folder panes side by side with copy/move between panes, favorites, two workspaces, drag & drop with Windows Explorer, and full session restore. Ships as a single portable x64 executable built on Electron. Built-in transfers skip conflicts and the Delete key uses the Recycle Bin. Windows shell commands follow Windows and extension behavior. Detailed docs below are in Korean.
@@ -29,13 +29,22 @@
 
 ## 포터블 실행
 
-기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.9.1-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 열린 폴더·작업 공간·즐겨찾기·테마와 표시 설정은 실행 파일 옆 `quadpane-data/`에 저장되며, 기존 설정 폴더를 그대로 재사용할 수 있습니다. EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
+기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.9.2-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 열린 폴더·작업 공간·즐겨찾기·테마와 표시 설정은 실행 파일 옆 `quadpane-data/`에 저장되며, 기존 설정 폴더를 그대로 재사용할 수 있습니다. EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
 
 ## 앱 내 업데이트 (v0.9.1부터)
 
 왼쪽 아래에 현재 버전을 표시합니다. 포터블 실행 후 최신 정식 GitHub 릴리스를 백그라운드에서 한 번 확인하며, 버전 버튼으로 다시 확인할 수 있습니다. 새 버전이 있으면 **다운로드 → 업데이트하고 다시 시작** 순서로 진행합니다. 파일 작업 중에는 재시작하지 않으며 작업 공간과 표시 설정을 저장합니다.
 
-새 EXE는 기존 EXE 옆에 저장하고 `quadpane-data`를 그대로 사용합니다. 다운로드한 파일의 SHA-256을 검증하며 기존 EXE는 보관합니다. 인터넷은 업데이트 확인·다운로드에만 필요합니다. 연결되지 않아도 파일 탐색은 계속 사용할 수 있습니다. 기존 v0.9.0 배포 파일에는 이 기능이 없으므로, 기능을 포함한 첫 버전은 직접 내려받아야 합니다.
+새 EXE는 기존 EXE 옆에 저장하고 `quadpane-data`를 그대로 사용합니다. 다운로드한 파일의 SHA-256을 검증하며 기존 EXE는 보관합니다. 인터넷은 업데이트 확인·다운로드에만 필요합니다. 연결되지 않아도 파일 탐색은 계속 사용할 수 있습니다. v0.9.1 사용자는 버전 버튼에서 업데이트를 확인하거나, 앱 종료 후 새 EXE를 기존 `quadpane-data` 옆에 두면 됩니다. 앱 내 업데이트가 없는 v0.9.0 이하에서는 직접 내려받아 주세요.
+
+## v0.9.2 주요 변경
+
+- 외부 파일 복사·붙여넣기·드래그가 아무 반응 없이 무시되거나 취소되는 원인을 수정합니다. 포커스 복귀 후 같은 폴더를 새로고침하는 중에도 선택과 붙여넣기 대상을 유지합니다.
+- 빠른 복사·붙여넣기와 늦게 도착한 클립보드 응답의 충돌을 막고, 마우스 버튼 해제와 OLE 알림 사이에 짧은 유예를 둡니다.
+- 보이는 패널만 조회·렌더링하고, 네이티브 도우미와 포터블 압축 해제 방식을 개선해 시작과 작은 파일 작업의 준비 비용을 줄입니다.
+- 같은 이름은 계속 건너뛰며 덮어쓰거나 병합하지 않습니다. 결과가 불확실한 파일 변경 작업은 자동 재실행하지 않습니다.
+
+자세한 내용은 [v0.9.2 릴리스 노트](docs/releases/v0.9.2.md), 프리뷰 측정 조건은 [외부 파일 작업·시작 성능 개선 기록](docs/transfer-performance.md)을 참고하세요.
 
 ## v0.9.1 주요 변경
 
@@ -115,7 +124,7 @@ npm run desktop
 
 ## 검증
 
-v0.9.0은 전체 자동 검사와 출시 EXE의 기능 검사를 수행합니다. 상세 결과와 검증 한계는 [PORTABLE.md의 실행 검증](PORTABLE.md#실행-검증)에 기록합니다. 아래 수치는 과거 버전의 기록입니다.
+v0.9.2 로컬 검사에서 JavaScript 52개 파일 문법 검사, 전체 단위 테스트 365개 통과·환경 조건 2개 건너뜀, 네이티브 도우미 3개와 포터블 빌드 통과를 확인했습니다. 앞선 출시 전 검증의 렌더러 경합 시나리오 24개·드래그 복구 9개 그룹·포터블 실행 3회도 통과했습니다. 실제 Explorer·브라우저로의 물리적 드롭은 검사하지 않았습니다. 상세 결과와 최종 EXE 검증의 구분은 [PORTABLE.md의 실행 검증](PORTABLE.md#실행-검증)을 참고하세요. 아래 수치는 과거 버전의 기록입니다.
 
 v0.8.1 로컬 검증: JavaScript 34개 파일 문법 검사와 자동 테스트 201개 통과(실패·건너뜀 없음). 도우미 응답·종료, 드래그 취소·경쟁 상황 및 다른 드라이브 간 파일 이동을 확인했습니다.
 
@@ -156,6 +165,8 @@ node scripts/verification/verify-launcher.cjs 'Playwright가 들어 있는 node_
 | [Windows 셸 통합](docs/windows-shell.md) | 클래식 메뉴·드래그·클립보드 동작과 검증 범위 |
 | [셸 메뉴·드래그 복구](docs/shell-recovery.md) | v0.8.0 캡처 잔류 현상과 v0.8.1 수정·검증 기록 |
 | [표시·선택·이동 개선](docs/display-selection.md) | v0.8.0 표시 설정·드래그 선택·이동 안정성 개선과 프리뷰 검증 이력 |
+| [v0.9.2 릴리스 노트](docs/releases/v0.9.2.md) | 외부 복사·붙여넣기·드래그 안정화와 시작 성능 개선 |
+| [외부 파일 작업·시작 성능 개선](docs/transfer-performance.md) | v0.9.2 수정 원인, 출시 전 프리뷰 측정과 검증 범위 |
 | [v0.8.1 릴리스 노트](docs/releases/v0.8.1.md) | 네이티브 드래그의 캡처 잔류와 메뉴·드래그 복구 개선 |
 | [v0.8.0 릴리스 노트](docs/releases/v0.8.0.md) | 숨김 항목·확장자 표시, 드래그 다중 선택과 파일 이동 안정성 개선 |
 | [v0.7.0 릴리스 노트](docs/releases/v0.7.0.md) | 패널별 앞으로 가기, 마우스 측면 버튼 수정과 방문 기록 안정성 개선 |

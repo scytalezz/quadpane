@@ -180,7 +180,7 @@ async function scenario(name, run, native = true) {
       assert.equal(await count(page, 'list'), lists, 'Do not reload the source while the external native drag is live');
       assert.equal(await count(page, 'clipboard'), clipboard);
       await settle(page, 'drag', ok({ action }));
-      assert.equal(await count(page, 'list'), lists + 8, 'One terminal response refreshes the eight panes');
+      assert.equal(await count(page, 'list'), lists + 4, 'One terminal response refreshes the four visible panes');
       assert.equal(await count(page, 'cancel'), 0, 'Focus/dragend/success must not call cancelShell');
       assert.equal(await count(page, 'transfer'), 0, 'The external native result must never replay a file operation');
       assert.equal(await count(page, 'drag'), drags + 1);

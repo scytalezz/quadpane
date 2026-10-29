@@ -143,6 +143,11 @@ internal static class DirectoryReader
                 return Error(0, InvalidParameter);
             id = Convert.ToInt64(value, CultureInfo.InvariantCulture);
             if (id <= 0) return Error(0, InvalidParameter);
+            if (request.TryGetValue("mode", out value)) {
+                if (!(value is string) || (string)value != "drives") return Error(id, InvalidParameter);
+                // Enumerate assigned drive letters; do not probe media/network readiness.
+                return new { id = id, ok = true, roots = Environment.GetLogicalDrives() };
+            }
             if (!request.TryGetValue("path", out value) || !IsExtendedDirectoryPath(value as string))
                 return Error(id, InvalidParameter);
             string path = (string)value;
@@ -155,6 +160,7 @@ internal static class DirectoryReader
             return new { id = id, ok = true, entries = ReadDirectory(path, accurate) };
         }
         catch (Win32Exception error) { return Error(id, error.NativeErrorCode); }
+        catch (IOException error) { return Error(id, Marshal.GetHRForException(error) & 65535); }
         catch (ArgumentException) { return Error(id, InvalidParameter); }
         catch (InvalidOperationException) { return Error(id, InvalidParameter); }
     }

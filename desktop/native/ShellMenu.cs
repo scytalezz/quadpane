@@ -50,13 +50,20 @@ public class DropSource : IDropSource {
     enum Phase { Dragging, Cancelled, Committing, Finished }
     readonly object gate = new object();
     readonly Func<bool> buttonDown, disconnected;
+    readonly Func<long> milliseconds;
     readonly Action committing;
     Phase phase;
     bool armed;
     long releasedSince = -1;
+    long staleKeysSince = -1;
+    const int ReleaseCallbackGrace = 250;
     public DropSource() : this(NativeDragInput.PrimaryDown, () => false, () => {}) { }
-    internal DropSource(Func<bool> buttonDown, Func<bool> disconnected, Action committing) {
+    internal DropSource(Func<bool> buttonDown, Func<bool> disconnected, Action committing)
+        : this(buttonDown, disconnected, committing, null) { }
+    internal DropSource(Func<bool> buttonDown, Func<bool> disconnected, Action committing, Func<long> milliseconds) {
         this.buttonDown = buttonDown; this.disconnected = disconnected; this.committing = committing;
+        var clock = Stopwatch.StartNew();
+        this.milliseconds = milliseconds ?? (() => clock.ElapsedMilliseconds);
     }
     internal bool CanStart() {
         lock (gate) {
@@ -71,15 +78,27 @@ public class DropSource : IDropSource {
             if (phase == Phase.Committing) return Drop;
             if (phase != Phase.Dragging) return Cancel;
             if (escape || disconnected()) { phase = Phase.Cancelled; return Cancel; }
+            long now = milliseconds();
+            // A new press cannot revive the old gesture, including when OLE
+            // delivers the old release before it delivers that new press.
+            if (staleKeysSince >= 0 && (now - staleKeysSince >= ReleaseCallbackGrace || buttonDown())) {
+                phase = Phase.Cancelled; return Cancel;
+            }
             if ((keys & 1) == 0) {
                 // An unarmed source must never manufacture a drop. Preflight
                 // can arm it: OLE need not call us before the first release.
                 if (!armed) { phase = Phase.Cancelled; return Cancel; }
                 phase = Phase.Committing; // Disable the watchdog BEFORE Drop can run.
             } else {
-                // OLE can retain stale MK_LBUTTON after the physical release.
-                // Returning DROP here could commit to an unintended target.
-                if (!buttonDown()) { phase = Phase.Cancelled; return Cancel; }
+                // Physical state can run ahead of OLE's queued release callback.
+                // Allow a bounded delivery grace, but only OLE may authorize DROP.
+                if (!buttonDown()) {
+                    if (!armed) { phase = Phase.Cancelled; return Cancel; }
+                    if (staleKeysSince < 0) staleKeysSince = now;
+                    return 0;
+                }
+                // A new press must not extend/revive the ambiguous old gesture.
+                if (staleKeysSince >= 0) { phase = Phase.Cancelled; return Cancel; }
                 armed = true;
                 return 0;
             }
@@ -328,6 +347,7 @@ class ShellHost : Form {
     System.Runtime.InteropServices.ComTypes.IDataObject clipboardSnapshot;
     string[] clipboardPaths;
     uint clipboardSequence;
+    object clipboardValue;
     ShellLifetime lifetime;
     bool ParentDisconnected { get { return lifetime != null && lifetime.IsDisconnected; } }
     static object CancelledDrag() { return new { action = "cancel", effect = 0u, sourceRetained = false }; }
@@ -397,21 +417,58 @@ class ShellHost : Form {
         ClipboardEffect(data, "Paste Succeeded", 2);
     }
     object ReadClipboardSnapshot() {
-        if (clipboardSnapshot != null) { Marshal.ReleaseComObject(clipboardSnapshot); clipboardSnapshot = null; }
-        for (int attempt = 0; attempt < 3; ++attempt) {
-            uint before = GetClipboardSequenceNumber();
-            System.Runtime.InteropServices.ComTypes.IDataObject data;
-            Marshal.ThrowExceptionForHR(OleGetClipboard(out data));
-            if (data == null) return new { sources = new string[0], operation = "copy", sequence = before };
-            var wrapper = new DataObject(data);
-            var paths = wrapper.GetData(DataFormats.FileDrop) as string[] ?? new string[0];
-            var stream = wrapper.GetData("Preferred DropEffect") as MemoryStream;
-            var bytes = stream == null ? null : stream.ToArray();
-            if (before != GetClipboardSequenceNumber()) { Marshal.ReleaseComObject(data); continue; }
-            clipboardSnapshot = data; clipboardSequence = before; clipboardPaths = paths;
-            return new { sources = paths, operation = bytes != null && bytes.Length >= 4 && BitConverter.ToUInt32(bytes, 0) == 2 ? "move" : "copy", sequence = before };
+        return ReadClipboardSnapshot(GetClipboardSequenceNumber, OleGetClipboard,
+            data => new DataObject(data), data => Marshal.ReleaseComObject(data), Thread.Sleep);
+    }
+    internal delegate int ClipboardRead(out System.Runtime.InteropServices.ComTypes.IDataObject data);
+    // Injectable boundaries keep contract tests away from the system clipboard.
+    internal object ReadClipboardSnapshot(Func<uint> sequence, ClipboardRead read,
+        Func<System.Runtime.InteropServices.ComTypes.IDataObject, System.Windows.Forms.IDataObject> wrap,
+        Action<System.Runtime.InteropServices.ComTypes.IDataObject> release, Action<int> pause) {
+        uint currentSequence = sequence();
+        // Reuse only a fully materialized, known generation. Zero means the
+        // generation could not be read and must never validate cached content.
+        // Do not cache an empty/temporarily unavailable delayed-render result.
+        if (currentSequence != 0 && clipboardSnapshot != null && clipboardPaths.Length != 0 && currentSequence == clipboardSequence) return clipboardValue;
+        ClearClipboardSnapshot(release);
+        const int attempts = 5, cantOpen = unchecked((int)0x800401d0);
+        for (int attempt = 0; attempt < attempts; ++attempt) {
+            uint before = sequence();
+            System.Runtime.InteropServices.ComTypes.IDataObject data = null;
+            try {
+                int result = read(out data);
+                if (result != cantOpen || attempt == attempts - 1) Marshal.ThrowExceptionForHR(result);
+                if (result >= 0) {
+                    string[] paths = new string[0];
+                    byte[] bytes = null;
+                    if (data != null) {
+                        var wrapper = wrap(data);
+                        paths = wrapper.GetData(DataFormats.FileDrop) as string[] ?? new string[0];
+                        var stream = wrapper.GetData("Preferred DropEffect") as MemoryStream;
+                        bytes = stream == null ? null : stream.ToArray();
+                    }
+                    if (before == sequence()) {
+                        var value = new { sources = paths, operation = bytes != null && bytes.Length >= 4 && BitConverter.ToUInt32(bytes, 0) == 2 ? "move" : "copy", sequence = before };
+                        clipboardSnapshot = data; clipboardSequence = before; clipboardPaths = paths; clipboardValue = value;
+                        data = null; // Ownership transferred only after a coherent read.
+                        return value;
+                    }
+                }
+            } finally { if (data != null) release(data); }
+            // Retry acquisition/changing generations only, never a provider
+            // exception or any clipboard/file mutation. No message-loop reentry.
+            if (attempt < attempts - 1) pause(50);
         }
         throw new InvalidOperationException("Clipboard changed during snapshot");
+    }
+    void ClearClipboardSnapshot(Action<System.Runtime.InteropServices.ComTypes.IDataObject> release) {
+        var previous = clipboardSnapshot;
+        clipboardSnapshot = null; clipboardPaths = null; clipboardSequence = 0; clipboardValue = null;
+        if (previous != null) release(previous);
+    }
+    protected override void Dispose(bool disposing) {
+        try { if (disposing) ClearClipboardSnapshot(data => Marshal.ReleaseComObject(data)); }
+        finally { base.Dispose(disposing); }
     }
 
     ShellHost() {

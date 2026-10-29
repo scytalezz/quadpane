@@ -4,7 +4,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { createTransferService, validateTransfer, copyFileRecord, nativeMove, transferError } = require('./file-operations.cjs');
+const operations = require('./file-operations.cjs');
+const { validateTransfer, copyFileRecord, transferError, createNativeMover } = operations;
+const nativeMove = process.env.PANE_TEST_MOVE_HELPER
+  ? createNativeMover({ executable: path.resolve(process.env.PANE_TEST_MOVE_HELPER) }) : operations.nativeMove;
+const createTransferService = (options = {}) => operations.createTransferService({ nativeMove, ...options });
 const base = path.join(__dirname, '..', '.checks', 'file-operation-tests');
 
 async function fixture() {
@@ -98,12 +102,13 @@ test('a conflicting selected parent does not extract its selected child', async 
   assert.deepEqual(await fs.readdir(f.destination), ['folder']);
 });
 
-async function nativeResponse(output, exitCode = 0, stderr = '') {
+async function nativeResponse(output, exitCode = 0, stderr = '', runtime = process, onSpawn = () => {}) {
   const { EventEmitter } = require('node:events');
   const { PassThrough } = require('node:stream');
   const vm = require('node:vm');
   const module = { exports: {} };
-  const spawn = () => {
+  const spawn = executable => {
+    onSpawn(executable);
     const child = new EventEmitter();
     child.stdin = new PassThrough();
     child.stdout = new PassThrough();
@@ -116,10 +121,20 @@ async function nativeResponse(output, exitCode = 0, stderr = '') {
     return child;
   };
   vm.runInNewContext(await fs.readFile(path.join(__dirname, 'file-operations.cjs'), 'utf8'), {
-    module, process, require: name => name === 'node:child_process' ? { spawn } : require(name),
+    module, process: runtime, __dirname, require: name => name === 'node:child_process' ? { spawn } : require(name),
   });
   return module.exports.nativeMove('C:\\fixture\\source', 'C:\\fixture\\target', 'file');
 }
+
+test('mover uses the local build in Electron development and extraResources in packaged Electron', async () => {
+  for (const defaultApp of [true, false]) {
+    const resourcesPath = 'C:\\private-electron\\resources';
+    const expected = defaultApp ? path.join(__dirname, 'native', 'bin', 'Quadpane.Move.exe')
+      : path.join(resourcesPath, 'native', 'Quadpane.Move.exe');
+    await nativeResponse('{"ok":true}', 0, '', { platform: 'win32', env: process.env, resourcesPath, defaultApp },
+      executable => assert.equal(executable, expected));
+  }
+});
 
 test('native replies require an explicit boolean success and a successful process exit', async () => {
   await nativeResponse('\uFEFF{"ok":true}\r\n');
@@ -132,6 +147,99 @@ test('native replies require an explicit boolean success and a successful proces
     assert.match(error.nativeError, /native transport failed/);
     return true;
   });
+});
+
+test('a failed process exit cannot turn an uncertain mutation into a retryable EXDEV or skipped conflict', async () => {
+  for (const win32 of [17, 80, 183]) {
+    await assert.rejects(nativeResponse(JSON.stringify({ ok: false, win32, message: 'unconfirmed failure' }), 1), error => {
+      assert.equal(error.code, 'TRANSFER_FAILED');
+      assert.equal(error.win32, win32);
+      assert.equal(error.exitCode, 1);
+      return true;
+    });
+  }
+});
+
+function simulatedMover(replies) {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const calls = [];
+  const move = createNativeMover({ executable: 'C:\\private-fixture\\Quadpane.Move.exe', spawn(executable, args, options) {
+    const reply = replies[calls.length];
+    assert.ok(reply, 'Unexpected mutation replay');
+    const child = new EventEmitter();
+    child.stdin = new PassThrough();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    calls.push({ executable, args, options });
+    process.nextTick(() => {
+      if (!reply.launchError) child.emit('spawn');
+      if (reply.error || reply.launchError) child.emit('error', Object.assign(new Error('fixture spawn error'), {
+        code: reply.error || reply.launchError,
+      }));
+      child.stdout.end(reply.output || '');
+      child.stderr.end();
+      child.emit('close', reply.exitCode ?? 0, reply.signal || null);
+    });
+    return child;
+  } });
+  return { move, calls };
+}
+
+test('missing helper falls back only when no process started', async () => {
+  const { move, calls } = simulatedMover([{ launchError: 'ENOENT' }, { output: '{"ok":true}' }]);
+  await move('C:\\private-fixture\\a', 'C:\\private-fixture\\b', 'file');
+  assert.equal(calls.length, 2);
+  assert.match(calls[0].executable, /Quadpane\.Move\.exe$/u);
+  assert.match(calls[1].executable, /powershell\.exe$/u);
+  assert.equal(calls[0].options.windowsHide, true);
+  assert.equal(calls[1].options.windowsHide, true);
+});
+
+test('native errors, malformed responses, abnormal exits and errors after launch never fall back', async () => {
+  for (const reply of [
+    { output: '{"ok":false,"win32":2}' },
+    { output: 'lost response' },
+    { output: '{"ok":true}', exitCode: 1 },
+    { output: '{"ok":false,"win32":17}', exitCode: 1 },
+    { output: '{"ok":true}', signal: 'SIGTERM' },
+    { error: 'ENOENT' },
+    { launchError: 'EACCES' },
+  ]) {
+    const { move, calls } = simulatedMover([reply]);
+    await assert.rejects(move('C:\\private-fixture\\a', 'C:\\private-fixture\\b', 'file'));
+    assert.equal(calls.length, 1, JSON.stringify(reply));
+  }
+});
+
+test('cross-volume tree uses its existing single-process path directly without probing the helper', async () => {
+  const { move, calls } = simulatedMover([{ output: '{"ok":false,"win32":32}' }]);
+  await assert.rejects(move('C:\\private-fixture\\a', 'D:\\private-fixture\\b', 'tree'), { code: 'EBUSY' });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].executable, /powershell\.exe$/u);
+});
+
+test('copy publication and file/directory moves support paths longer than MAX_PATH', async () => {
+  const f = await fixture();
+  const destination = path.join(f.destination, ...Array(7).fill('long-directory-segment'));
+  await fs.mkdir(destination, { recursive: true });
+  assert.ok(destination.length > 260);
+  const file = path.join(f.source, 'long-path.txt');
+  await fs.writeFile(file, 'long path bytes');
+  const copied = await createTransferService().transfer({ sources: [file], destination, operation: 'copy' });
+  assert.equal(copied.completed.length, 1, JSON.stringify(copied));
+  assert.equal(await fs.readFile(path.join(destination, 'long-path.txt'), 'utf8'), 'long path bytes');
+  const nested = path.join(destination, 'move-to');
+  await fs.mkdir(nested);
+  const folder = path.join(f.source, 'long-path-folder');
+  await fs.mkdir(folder);
+  await fs.writeFile(path.join(folder, 'child.txt'), 'nested bytes');
+  const moved = await createTransferService().transfer({ sources: [file, folder], destination: nested, operation: 'move' });
+  assert.equal(moved.completed.length, 2, JSON.stringify(moved));
+  await missing(file);
+  await missing(folder);
+  assert.equal(await fs.readFile(path.join(nested, 'long-path.txt'), 'utf8'), 'long path bytes');
+  assert.equal(await fs.readFile(path.join(nested, 'long-path-folder', 'child.txt'), 'utf8'), 'nested bytes');
 });
 
 test('native network errors and transfer diagnostics retain actionable causes', async () => {
@@ -387,9 +495,11 @@ test('cross-volume file and nested folder move preserve bytes, remove originals,
   const file = path.join(f.source, 'cross-volume.txt');
   const folder = path.join(f.source, 'cross-volume-folder');
   await fs.writeFile(file, 'cross-volume file');
+  await fs.writeFile(`${file}:Zone.Identifier`, '[ZoneTransfer]\r\nZoneId=3\r\n');
   await fs.mkdir(path.join(folder, 'nested'), { recursive: true });
   await fs.mkdir(path.join(folder, 'empty'));
   await fs.writeFile(path.join(folder, 'nested', '한글.txt'), 'cross-volume folder');
+  await fs.writeFile(`${path.join(folder, 'nested', '한글.txt')}:custom.metadata`, 'nested stream bytes');
   const copyDestination = path.join(destination, 'copies');
   await fs.mkdir(copyDestination);
   const copy = await createTransferService().transfer({ sources: [file, folder], destination: copyDestination, operation: 'copy' });
@@ -402,6 +512,8 @@ test('cross-volume file and nested folder move preserve bytes, remove originals,
   await missing(file);
   await missing(folder);
   assert.equal(await fs.readFile(path.join(destination, 'cross-volume.txt'), 'utf8'), 'cross-volume file');
+  assert.equal(await fs.readFile(`${path.join(destination, 'cross-volume.txt')}:Zone.Identifier`, 'utf8'), '[ZoneTransfer]\r\nZoneId=3\r\n');
+  assert.equal(await fs.readFile(`${path.join(destination, 'cross-volume-folder', 'nested', '한글.txt')}:custom.metadata`, 'utf8'), 'nested stream bytes');
   assert.equal(await fs.readFile(path.join(destination, 'cross-volume-folder', 'nested', '한글.txt'), 'utf8'), 'cross-volume folder');
   assert.deepEqual(await fs.readdir(path.join(destination, 'cross-volume-folder', 'empty')), []);
   await fs.writeFile(file, 'new source stays');

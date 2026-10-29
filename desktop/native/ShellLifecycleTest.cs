@@ -60,9 +60,12 @@ class ShellLifecycleTest {
         Check(!NativeDragInput.PrimaryDown(value => 0, true), "unavailable physical state fails closed");
     }
     static void DragTests() {
+        ReleaseOrderingTest();
+        ReleaseGraceTests();
         bool down = false, disconnected = false;
+        long now = 0;
         int commits = 0;
-        Func<DropSource> create = () => new DropSource(() => down, () => disconnected, () => commits++);
+        Func<DropSource> create = () => new DropSource(() => down, () => disconnected, () => commits++, () => now);
         var source = create();
         Check(!source.CanStart(), "released gesture cannot start");
         down = true;
@@ -81,7 +84,9 @@ class ShellLifecycleTest {
         source = create();
         Check(source.QueryContinueDrag(false, 1 | 4 | 8) == 0, "held with shift/control continues");
         down = false;
-        Check(source.QueryContinueDrag(false, 1) == 0x40101 && commits == 0, "stale OLE held state cancels, never drops");
+        Check(source.QueryContinueDrag(false, 1) == 0 && commits == 0, "stale OLE held state waits without dropping");
+        now += 250;
+        Check(source.QueryContinueDrag(false, 1) == 0x40101 && commits == 0, "sustained stale OLE state cancels, never drops");
         down = true;
         Check(source.QueryContinueDrag(false, 0) == 0x40101, "cancellation is latched");
         source = create();
@@ -97,6 +102,59 @@ class ShellLifecycleTest {
         disconnected = true;
         Check(source.QueryContinueDrag(false, 0) == 0x40101 && commits == 1, "parent disconnect wins over release");
         Check(!create().CanStart(), "disconnected parent cannot start a gesture");
+    }
+    static void ReleaseOrderingTest() {
+        bool down = true;
+        int commits = 0;
+        var source = new DropSource(() => down, () => false, () => commits++, () => 0);
+        Check(source.CanStart(), "ordering fixture starts held");
+        down = false; // Physical release precedes OLE's queued release callback.
+        int pending = source.QueryContinueDrag(false, 1);
+        int released = source.QueryContinueDrag(false, 0);
+        Check(pending == 0 && released == 0x40100 && commits == 1,
+            "OLE held callback followed by release must not falsely cancel (pending=" + pending.ToString("x") + ", released=" + released.ToString("x") + ")");
+    }
+    static void ReleaseGraceTests() {
+        bool down = true, disconnected = false;
+        long now = 0;
+        int commits = 0, exits = 0;
+        Func<DropSource> create = () => new DropSource(() => down, () => disconnected, () => commits++, () => now);
+        var source = create(); source.CanStart(); down = false;
+        Check(source.QueryContinueDrag(false, 1) == 0, "physical release alone never commits");
+        now = 249;
+        Check(source.QueryContinueDrag(false, 1) == 0 && commits == 0, "repeated held callback stays within original grace");
+        Check(source.QueryContinueDrag(false, 0) == 0x40100 && commits == 1, "OLE release within grace commits");
+        disconnected = true;
+        Check(source.QueryContinueDrag(true, 1) == 0x40100 && commits == 1, "committing stays protected from late cancellation");
+        source.PollRelease(100000, false, false, () => exits++);
+        Check(exits == 0, "grace-period commit is exempt from retirement");
+        disconnected = false; down = true;
+        source = create(); source.CanStart(); down = false;
+        source.QueryContinueDrag(false, 1); now += 250;
+        Check(source.QueryContinueDrag(false, 0) == 0x40101 && commits == 1, "release at expired grace cannot drop onto a late target");
+        down = true;
+        Check(source.QueryContinueDrag(false, 1) == 0x40101, "expired gesture cannot revive");
+        source = create(); source.CanStart(); down = false;
+        source.QueryContinueDrag(false, 1); down = true;
+        Check(source.QueryContinueDrag(false, 1) == 0x40101, "new press cannot revive an ambiguous released gesture");
+        source = create(); source.CanStart(); down = false;
+        source.QueryContinueDrag(false, 1); down = true;
+        Check(source.QueryContinueDrag(false, 0) == 0x40101, "new physical press rejects an old queued release");
+        source = create(); source.CanStart(); down = false;
+        source.QueryContinueDrag(false, 1);
+        Check(source.QueryContinueDrag(true, 0) == 0x40101, "Escape cancels within callback grace");
+        down = true; source = create(); source.CanStart(); down = false;
+        source.QueryContinueDrag(false, 1); disconnected = true;
+        Check(source.QueryContinueDrag(false, 0) == 0x40101, "disconnect cancels within callback grace");
+        disconnected = false;
+        source = create();
+        Check(source.QueryContinueDrag(false, 1) == 0x40101 && source.QueryContinueDrag(false, 0) == 0x40101,
+            "unarmed physical release never enters grace or drops");
+        down = true; source = create(); source.CanStart(); down = false;
+        source.QueryContinueDrag(false, 1);
+        source.PollRelease(0, false, false, () => exits++);
+        source.PollRelease(2000, false, false, () => exits++);
+        Check(exits == 1 && source.QueryContinueDrag(false, 0) == 0x40101, "missing callback still retires uncommitted helper");
     }
     static void WatchdogTests() {
         int exits = 0, commits = 0;
@@ -261,6 +319,7 @@ class ShellLifecycleTest {
         if (args[0] == "fixture-parent") return ParentFixture();
         if (args[0] == "buttons") { ButtonTests(); return 0; }
         if (args[0] == "drag") { DragTests(); return 0; }
+        if (args[0] == "release-ordering") { ReleaseOrderingTest(); return 0; }
         if (args[0] == "watchdog") { WatchdogTests(); return 0; }
         if (args[0] == "races") { RaceTests(); return 0; }
         if (args[0] == "progress") { ProgressTests(); return 0; }

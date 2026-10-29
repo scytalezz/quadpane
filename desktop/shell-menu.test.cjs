@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
+const vm = require('node:vm');
 const { validateMenuRequest, createShellMenuService } = require('./shell-menu.cjs');
 const root = path.join(__dirname, '..', '.checks', 'shell-menu-tests');
 fs.mkdirSync(root, { recursive: true });
@@ -28,6 +29,36 @@ test('helper spawn failure is reported and service can retry without a stuck pen
   await assert.rejects(service.show({ parent: folder, paths: [first] }, {}));
   await assert.rejects(service.show({ parent: folder, paths: [first] }, {}));
   service.close();
+});
+
+test('drag dispatch does not wait on redundant filesystem reads; native failures still propagate', async () => {
+  let reads = 0;
+  const sandbox = { module: { exports: {} }, process, AbortController, setTimeout, clearTimeout,
+    require(name) {
+      if (name === 'node:fs/promises') return { stat() { reads++; throw new Error('Slow filesystem'); }, lstat() { reads++; throw new Error('Slow filesystem'); } };
+      return require(name);
+    },
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, 'shell-menu.cjs'), 'utf8'), sandbox);
+  const worker = new EventEmitter();
+  worker.stdin = new PassThrough(); worker.stdout = new PassThrough(); worker.stderr = new PassThrough();
+  worker.kill = () => { queueMicrotask(() => worker.emit('exit', 0)); return true; };
+  worker.stdin.on('finish', () => queueMicrotask(() => worker.emit('exit', 0)));
+  let payload;
+  worker.stdin.on('data', chunk => {
+    payload = JSON.parse(String(chunk));
+    worker.stdout.write(JSON.stringify({ id: payload.id, ok: false, error: 'Native source missing' }) + '\n');
+  });
+  const service = sandbox.module.exports.createShellMenuService('fake.exe', { spawn: () => worker });
+  try {
+    await assert.rejects(service.show({ parent: folder, paths: [first] }, {}, 'drag'));
+    assert.equal(reads, 0);
+    assert.equal(payload.mode, 'drag');
+    assert.deepEqual(payload.paths, [first]);
+    payload = undefined;
+    await assert.rejects(service.show({ parent: folder, paths: [path.join(child, 'nested')] }, {}, 'drag'), /share its parent/u);
+    assert.equal(payload, undefined, 'mixed-parent selection must not reach native code');
+  } finally { await service.close(); }
 });
 
 test('cancel releases a hung shell request; late events cannot reject a replacement worker', async () => {

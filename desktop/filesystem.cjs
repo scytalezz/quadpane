@@ -1,8 +1,6 @@
 'use strict';
 
-const fs = require('node:fs/promises');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
 const { createDirectoryService } = require('./directory-service.cjs');
 const directoryReader = createDirectoryService();
 const pendingListings = new Map();
@@ -79,38 +77,8 @@ async function listDirectory(input, options = {}) {
 
 function closeDirectoryReader() { directoryReader.close(); }
 
-function powershellDriveRoots() {
-  const executable = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  return new Promise((resolve, reject) => {
-    execFile(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '[Environment]::GetLogicalDrives() | ConvertTo-Json -Compress'],
-      { windowsHide: true, timeout: 5000, maxBuffer: 32768 }, (error, stdout) => {
-        if (error) return reject(error);
-        try {
-          const parsed = JSON.parse(stdout.replace(/^\uFEFF/u, ''));
-          const roots = (Array.isArray(parsed) ? parsed : [parsed]).filter(value => typeof value === 'string' && /^[a-z]:\\$/iu.test(value));
-          if (!roots.length) throw new Error('No drive roots returned');
-          resolve(roots);
-        } catch (parseError) { reject(parseError); }
-      });
-  });
-}
-
-async function probeDriveRoots() {
-  const roots = Array.from({ length: 26 }, (_, index) => `${String.fromCharCode(65 + index)}:\\`);
-  const available = await Promise.all(roots.map(async root => {
-    let timer;
-    try {
-      return await Promise.race([
-        fs.stat(root).then(stat => stat.isDirectory() ? root : null).catch(() => null),
-        new Promise(resolve => { timer = setTimeout(() => resolve(null), 1500); }),
-      ]);
-    } finally { clearTimeout(timer); }
-  }));
-  return available.filter(Boolean);
-}
-
 async function discoverDrives() {
-  const roots = await powershellDriveRoots().catch(probeDriveRoots);
+  const roots = await directoryReader.drives();
   return [...new Set(roots.map(normalizePath))].sort().map(root => ({ path: root, label: root.slice(0, 2) }));
 }
 

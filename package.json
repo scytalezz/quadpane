@@ -1,6 +1,6 @@
 {
   "name": "quadpane",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "private": true,
   "description": "Quadpane — a multi-pane file explorer for Windows, inspired by Q-Dir.",
   "license": "MIT",
@@ -59,6 +59,10 @@
       {
         "from": "desktop/native/bin/Quadpane.Directory.exe",
         "to": "native/Quadpane.Directory.exe"
+      },
+      {
+        "from": "desktop/native/bin/Quadpane.Move.exe",
+        "to": "native/Quadpane.Move.exe"
       }
     ],
     "win": {
@@ -74,6 +78,7 @@
     },
     "portable": {
       "artifactName": "quadpane-${version}-portable-${arch}.${ext}",
+      "useZip": true,
       "requestExecutionLevel": "user"
     }
   }

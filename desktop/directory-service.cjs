@@ -76,12 +76,15 @@ function createDirectoryService({ executable = readerPath(), spawnProcess = spaw
     try { response = JSON.parse(line); } catch { return rejectAll(failure()); }
     if (!active || response?.id !== active.id
       || typeof response.ok !== 'boolean') return rejectAll(failure());
-    if (response.ok ? !Array.isArray(response.entries) || !response.entries.every(validEntry)
+    const validResult = active.mode === 'drives'
+      ? Array.isArray(response.roots) && response.roots.length <= 26 && response.roots.every(root => typeof root === 'string' && /^[a-z]:\\$/iu.test(root))
+      : Array.isArray(response.entries) && response.entries.every(validEntry);
+    if (response.ok ? !validResult
       : !Number.isInteger(response.error?.win32Code)) return rejectAll(failure());
     const request = active;
     active = undefined;
     clearTimer(request.timer);
-    if (response.ok) request.resolve(response.entries);
+    if (response.ok) request.resolve(request.mode === 'drives' ? response.roots : response.entries);
     else request.reject(nativeError(response.error.win32Code));
     dispatch();
   }
@@ -118,11 +121,20 @@ function createDirectoryService({ executable = readerPath(), spawnProcess = spaw
     active.timer = setTimer(() => rejectAll(failure('ETIMEDOUT')), timeoutMs);
     try {
       if (!worker) start();
-      worker.child.stdin.write(JSON.stringify({ id: active.id, path: path.win32.toNamespacedPath(active.directory), accurate: active.accurate }) + '\n', 'utf8');
+      const payload = active.mode === 'drives' ? { id: active.id, mode: 'drives' }
+        : { id: active.id, path: path.win32.toNamespacedPath(active.directory), accurate: active.accurate };
+      worker.child.stdin.write(JSON.stringify(payload) + '\n', 'utf8');
     } catch { rejectAll(failure()); }
   }
 
   return {
+    drives() {
+      if (closed) return Promise.reject(failure());
+      return new Promise((resolve, reject) => {
+        queue.push({ id: ++nextId, mode: 'drives', resolve, reject });
+        dispatch();
+      });
+    },
     list(directory, options = {}) {
       if (closed) return Promise.reject(failure());
       return new Promise((resolve, reject) => {

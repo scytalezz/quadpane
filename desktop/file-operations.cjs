@@ -118,27 +118,31 @@ try {
 }
 `;
 
-function nativeMove(source, destination, mode) {
+function runMoveProcess(source, destination, mode, executable, args, launch = spawn) {
   if (process.platform !== 'win32') return Promise.reject(failure('TRANSFER_FAILED'));
-  const executable = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   return new Promise((resolve, reject) => {
-    const child = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', moveScript], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = launch(executable, args, { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     let output = '';
     let stderr = '';
+    let started = false;
+    child.once('spawn', () => { started = true; });
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(0, 8192); });
     child.on('error', error => reject(Object.assign(failure('TRANSFER_FAILED'), {
       causeCode: error.code, nativeError: error.message,
+      ...(!started ? { launchError: error.code } : {}),
     })));
     child.stdin.on('error', () => {});
     child.on('close', (code, signal) => {
       let result;
       try { result = JSON.parse(output.replace(/^\uFEFF/u, '')); } catch { /* Uncertain outcome; never repeat the move. */ }
-      if (code === 0 && result?.ok === true) return resolve();
+      if (code === 0 && !signal && result?.ok === true) return resolve();
       const win32 = result?.ok === false && Number.isInteger(result.win32) ? result.win32 : undefined;
-      const mapped = {
+      // A reply from an abnormally terminated process is diagnostic only. In particular,
+      // treating it as EXDEV would replay an uncertain directory mutation as a tree move.
+      const mapped = code === 0 && !signal && {
         2: 'ENOENT', 3: 'ENOENT', 5: 'EACCES', 17: 'EXDEV', 21: 'ENODEV', 32: 'EBUSY', 33: 'EBUSY',
         53: 'ENETUNREACH', 55: 'ENODEV', 64: 'ENETUNREACH', 65: 'EACCES', 67: 'ENETUNREACH',
         80: 'EEXIST', 112: 'ENOSPC', 121: 'ETIMEDOUT', 183: 'EEXIST', 206: 'ENAMETOOLONG',
@@ -152,6 +156,30 @@ function nativeMove(source, destination, mode) {
     child.stdin.end(JSON.stringify({ source, destination, mode }), 'utf8');
   });
 }
+
+function createNativeMover(options = {}) {
+  const executable = options.executable || (process.resourcesPath && !process.defaultApp
+    ? path.join(process.resourcesPath, 'native', 'Quadpane.Move.exe')
+    : path.join(__dirname, 'native', 'bin', 'Quadpane.Move.exe'));
+  const powershell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  const legacyMove = (source, destination, mode) => runMoveProcess(source, destination, mode, powershell,
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', moveScript], options.spawn);
+  return async (source, destination, mode) => {
+    // Cross-volume trees already use one process for the entire tree. Keep that
+    // implementation and its partial-progress behavior; optimize per-item renames.
+    if (mode === 'tree') return legacyMove(source, destination, mode);
+    try {
+      await runMoveProcess(source, destination, mode, executable, [], options.spawn);
+    } catch (error) {
+      // Compatibility with installations without the helper. Only a failed launch can
+      // fall back: malformed replies, native errors and crashes must never replay moves.
+      if (error.launchError !== 'ENOENT') throw error;
+      await legacyMove(source, destination, mode);
+    }
+  };
+}
+
+const nativeMove = createNativeMover();
 
 async function copyFileRecord(record, target, created) {
   await noLinkAncestors(record.path);
@@ -298,4 +326,4 @@ function createTransferService(options = {}) {
   };
 }
 
-module.exports = { createTransferService, validateTransfer, mutationPath, nativeMove, transferError, copyFileRecord };
+module.exports = { createTransferService, validateTransfer, mutationPath, nativeMove, createNativeMover, transferError, copyFileRecord };

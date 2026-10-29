@@ -6,7 +6,7 @@ const { createRequire } = require('node:module');
 const dependencies = process.argv[2] ? createRequire(path.join(path.resolve(process.argv[2]), 'package.json')) : require;
 const { _electron } = dependencies('playwright');
 const project = path.resolve(__dirname, '..', '..');
-const executable = path.join(project, 'dist-portable', 'win-unpacked', 'Quadpane.exe');
+const executable = path.resolve(process.argv[3] || path.join(project, 'dist-portable', 'win-unpacked', 'Quadpane.exe'));
 const root = path.join(project, '.checks', 'real-files', `run-${Date.now()}`);
 const fixture = path.join(root, 'files');
 const alpha = path.join(fixture, '한글 Alpha');
@@ -143,7 +143,7 @@ async function navigate(page, number, location) {
   fs.writeFileSync(path.join(root, 'native-aria.txt'), await page.locator('body').ariaSnapshot());
   await application.close(); application = undefined;
   passed.push('Unavailable restored path retained and recoverable, unchanged file bytes, no runtime errors');
-  const report = { passed: true, executable, root, sessionFile, sourceFileHash: originalHash, asarSHA256: createHash('sha256').update(fs.readFileSync(path.join(project,'dist-portable/win-unpacked/resources/app.asar'))).digest('hex'), checks: passed };
+  const report = { passed: true, executable, root, sessionFile, sourceFileHash: originalHash, asarSHA256: createHash('sha256').update(fs.readFileSync(path.join(path.dirname(executable),'resources/app.asar'))).digest('hex'), checks: passed };
   fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));
 })().catch(async error => {

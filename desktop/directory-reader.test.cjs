@@ -8,7 +8,7 @@ const readline = require('node:readline');
 const { spawn, spawnSync } = require('node:child_process');
 const { test } = require('node:test');
 
-test('native helper build compiles both binaries sequentially and stops with a named failure', () => {
+test('native helper build compiles all binaries sequentially and stops with a named failure', () => {
   const source = fs.readFileSync(path.join(__dirname, 'build-shell-helper.cjs'), 'utf8');
   function build(results) {
     const calls = [], errors = [];
@@ -26,13 +26,15 @@ test('native helper build compiles both binaries sequentially and stops with a n
     } catch (error) { if (error.message !== 'test exit') throw error; }
     return { calls, errors, exit };
   }
-  const success = build([{ status: 0 }, { status: 0 }]);
-  assert.equal(success.calls.length, 2);
+  const success = build([{ status: 0 }, { status: 0 }, { status: 0 }]);
+  assert.equal(success.calls.length, 3);
   assert.equal(success.exit, undefined);
   assert.ok(success.calls[0][1].includes('/target:exe'));
   assert.ok(success.calls[1][1].includes('/target:winexe'));
   assert.ok(success.calls[1][1].some(arg => arg.endsWith('Quadpane.Directory.exe')));
   assert.ok(!success.calls[1][1].some(arg => /Windows.Forms|Drawing/u.test(arg)));
+  assert.ok(success.calls[2][1].includes('/target:winexe'));
+  assert.ok(success.calls[2][1].some(arg => arg.endsWith('Quadpane.Move.exe')));
   for (const result of [{ status: 7 }, { status: null, error: new Error('compiler missing') }, { status: null, signal: 'SIGTERM' }]) {
     const first = build([result]);
     assert.equal(first.calls.length, 1);
@@ -42,6 +44,10 @@ test('native helper build compiles both binaries sequentially and stops with a n
     assert.equal(second.calls.length, 2);
     assert.ok(second.exit > 0);
     assert.match(second.errors[0], /Failed to build Quadpane\.Directory\.exe/u);
+    const third = build([{ status: 0 }, { status: 0 }, result]);
+    assert.equal(third.calls.length, 3);
+    assert.ok(third.exit > 0);
+    assert.match(third.errors[0], /Failed to build Quadpane\.Move\.exe/u);
   }
 });
 
@@ -83,6 +89,22 @@ test('isolated native directory reader', { skip: process.platform !== 'win32', t
     assert.deepEqual(responses.map(response => response.id), targets.map((_, i) => i + 1));
     return responses;
   }
+
+  await t.test('drive letters and listings share the same protocol without probing volumes', () => {
+    const result = run(JSON.stringify({ id: 1, mode: 'drives' }) + '\n' +
+      JSON.stringify({ id: 2, mode: 'unknown' }) + '\n' + request(3, directory) + '\n');
+    assert.equal(result.status, 0);
+    const [drives, invalid, listing] = result.stdout.trim().split('\n').map(JSON.parse);
+    assert.equal(drives.id, 1);
+    assert.equal(drives.ok, true);
+    assert.ok(drives.roots.length > 0 && drives.roots.length <= 26);
+    assert.ok(drives.roots.every(root => /^[a-z]:\\$/iu.test(root)));
+    assert.ok(drives.roots.includes(path.parse(directory).root));
+    assert.equal(invalid.ok, false);
+    assert.equal(invalid.error.win32Code, 87);
+    assert.equal(listing.id, 3);
+    assert.equal(listing.ok, true);
+  });
 
   await t.test('PE subsystem is Windows GUI (2), with native metadata/tag contracts', () => {
     const binary = fs.readFileSync(executable);

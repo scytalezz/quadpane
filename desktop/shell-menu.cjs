@@ -63,19 +63,25 @@ function createShellMenuService(executable, options = {}) {
       revoke(item);
       // Queued requests were never sent; only the active dispatched operation
       // can have an uncertain outcome. Never replay either kind automatically.
-      item.reject(error.code === 'SHELL_TIMEOUT' ? failure(error.code, error.message, {
+      item.reject(['SHELL_TIMEOUT', 'SHELL_DISCONNECTED'].includes(error.code) || error.outcomeUncertain !== undefined ? failure(error.code, error.message, {
+        ...error,
         requestId: item.id, mode: item.mode, phase: item.phase || 'queued',
-        timeoutMs: error.timeoutMs, outcomeUncertain: Boolean(item.worker), retryable: false,
+        ...(error.timeoutMs !== undefined ? { timeoutMs: error.timeoutMs } : {}),
+        outcomeUncertain: Boolean(item.worker), retryable: false,
       }) : error);
     }
   }
   function kill(worker) {
+    if (workers.get(worker)?.unconfirmedCommit) return false;
     // Target only the ChildProcess created here, never Explorer or a PID lookup.
     try { return worker.kill('SIGKILL') !== false; } catch { return false; }
   }
   function stop(worker, graceful = false) {
     const owned = workers.get(worker);
     if (!owned) return Promise.resolve({ exited: true });
+    // A lost response channel during commit is not proof the move stopped.
+    // Retain ownership without sending EOF (which starts the native watchdog).
+    if (owned.unconfirmedCommit) return Promise.resolve({ exited: false });
     if (owned.stopping) return owned.stopping;
     const stopping = new Promise(resolve => {
       let finished = false, timer;
@@ -128,10 +134,27 @@ function createShellMenuService(executable, options = {}) {
   }
   function retire(worker, error) {
     if (child !== worker) return;
+    // Transport/protocol failure is not a terminal result for a committed move.
+    // Establish protection before rejecting requests or closing any pipe.
+    if (pending?.worker === worker && pending.phase === 'committing') {
+      workers.get(worker).unconfirmedCommit = true;
+      error = failure(error.code, error.message, { ...error, outcomeUncertain: true, retryable: false });
+    }
     child = undefined;
     if (pending?.worker === worker) rejectAll(error);
     workers.get(worker)?.lines.close();
     stop(worker);
+  }
+  function disconnected(worker, error) {
+    // readline forwards stdout errors before the stream's own error/close
+    // handlers. Protect a committed operation before any path can retire it.
+    // Retiring clears child, making repeated and stale notifications harmless.
+    if (child !== worker) return;
+    retire(worker, failure('SHELL_DISCONNECTED', error?.message || 'Windows shell helper response stream closed', {
+      ...(error?.code !== undefined ? { transportCode: error.code } : {}),
+      ...(error?.errno !== undefined ? { errno: error.errno } : {}),
+      ...(error?.syscall !== undefined ? { syscall: error.syscall } : {}),
+    }));
   }
   function settle(error, value) {
     const item = pending;
@@ -190,7 +213,7 @@ function createShellMenuService(executable, options = {}) {
         start();
         const worker = item.worker = child;
         arm(item, clipboardModes.has(mode) ? 'clipboard' : 'worker', clipboardModes.has(mode) ? timeouts.clipboardMs : timeouts.workerMs);
-        worker.stdin.write(payload, error => { if (error && child === worker && pending === item) retire(worker, error); });
+        worker.stdin.write(payload, error => { if (error && child === worker && pending === item) disconnected(worker, error); });
       } catch (error) {
         if (child) retire(child, error);
         else rejectAll(error);
@@ -206,6 +229,7 @@ function createShellMenuService(executable, options = {}) {
     const lines = createInterface({ input: worker.stdout });
     if (!workers.size) lifecycle.once('exit', onProcessExit);
     workers.set(worker, { lines });
+    lines.on('error', error => disconnected(worker, error));
     lines.on('line', line => {
       if (child !== worker) return;
       try {
@@ -224,9 +248,14 @@ function createShellMenuService(executable, options = {}) {
       } catch (error) { retire(worker, failure('SHELL_PROTOCOL_ERROR', error.message)); }
     });
     worker.stderr.resume();
-    worker.stdin.on('error', error => retire(worker, error));
-    worker.stdout.on('error', error => retire(worker, error));
-    worker.stderr.on('error', error => retire(worker, error));
+    worker.stdin.on('error', error => disconnected(worker, error));
+    worker.stdout.on('error', error => disconnected(worker, error));
+    // Stream closure does not guarantee a ChildProcess exit/close notification.
+    // Interactive requests have no deadline, so losing their response channel
+    // must settle them explicitly without releasing process ownership early.
+    worker.stdout.once('end', () => disconnected(worker));
+    worker.stdout.once('close', () => disconnected(worker));
+    worker.stderr.on('error', error => disconnected(worker, error));
     worker.on('error', error => retire(worker, error));
     function exited(exitCode, signal) {
       if (!workers.has(worker)) return;

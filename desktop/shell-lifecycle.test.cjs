@@ -59,12 +59,13 @@ test('native shell lifecycle and drag contracts', { skip: process.platform !== '
     const result = spawnSync(executable, ['first-released'], { windowsHide: true, encoding: 'utf8', timeout: 10000 });
     assert.equal(result.status, 0, result.stdout + result.stderr);
   });
-  for (const mode of ['parent-death', 'buttons', 'drag', 'watchdog', 'races', 'queue', 'queue-error', 'queue-cancel', 'queue-cancel-error', 'progress', 'lost-release', 'blocked-shutdown']) {
+  for (const mode of ['parent-alive', 'parent-death', 'buttons', 'drag', 'watchdog', 'blocked-commit-report', 'blocked-commit-watch', 'late-report', 'latched-cancel', 'races', 'queue', 'queue-error', 'queue-cancel', 'queue-cancel-error', 'progress', 'lost-release', 'blocked-shutdown']) {
     await t.test(mode, () => {
       const result = spawnSync(executable, [mode], { windowsHide: true, encoding: 'utf8', timeout: 10000 });
-      assert.equal(result.status, mode === 'lost-release' ? 2 : 0, `${result.error || ''}\n${result.stdout}\n${result.stderr}`);
+      assert.equal(result.status, ['lost-release', 'blocked-commit-watch'].includes(mode) ? 2 : 0, `${result.error || ''}\n${result.stdout}\n${result.stderr}`);
       assert.doesNotMatch(result.stdout, /TEST_DEADLINE/u);
       if (mode === 'blocked-shutdown') assert.match(result.stdout, /SHUTDOWN_BLOCKED/u);
+      if (mode === 'blocked-commit-watch') assert.match(result.stdout, /RELEASE_REPORT_BLOCKED/u);
     });
   }
 });

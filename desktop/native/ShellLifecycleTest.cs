@@ -156,6 +156,56 @@ class ShellLifecycleTest {
         source.PollRelease(2000, false, false, () => exits++);
         Check(exits == 1 && source.QueryContinueDrag(false, 0) == 0x40101, "missing callback still retires uncommitted helper");
     }
+    static void BlockedCommitReportTest() {
+        int exits = 0, result = 0;
+        using (var entered = new ManualResetEvent(false))
+        using (var resume = new ManualResetEvent(false)) {
+            var source = new DropSource(() => true, () => false, () => {
+                entered.Set();
+                resume.WaitOne(); // A stalled progress pipe, before OLE can call Drop.
+            });
+            source.CanStart();
+            var callback = new Thread(() => { result = source.QueryContinueDrag(false, 0); });
+            callback.IsBackground = true;
+            callback.Start();
+            try {
+                Check(entered.WaitOne(2000), "release callback reached progress reporting");
+                source.PollRelease(0, false, false, () => exits++);
+                source.PollRelease(2000, false, false, () => exits++);
+            } finally { resume.Set(); Check(callback.Join(2000), "late release callback returned"); }
+            Check(exits == 1 && result == 0x40101,
+                "blocked pre-Drop report retires safely and a late callback cannot authorize Drop (exits=" + exits + ", result=" + result.ToString("x") + ")");
+            source.Finish();
+        }
+    }
+    static void LateReportTests() {
+        bool disconnected = false;
+        int exits = 0;
+        var source = new DropSource(() => true, () => disconnected, () => { disconnected = true; });
+        source.CanStart();
+        Check(source.QueryContinueDrag(false, 0) == 0x40101,
+            "disconnect while reporting release prevents a late Drop");
+        disconnected = false;
+        source = new DropSource(() => true, () => false, () => source.Finish());
+        source.CanStart();
+        Check(source.QueryContinueDrag(false, 0) == 0x40101,
+            "completion while reporting release prevents a late Drop");
+        source.PollRelease(0, false, false, () => exits++);
+        source.PollRelease(2000, false, false, () => exits++);
+        Check(exits == 0, "late callback preserves finished state and cannot retire later work");
+    }
+    static void LatchedCancellationTest() {
+        int exits = 0;
+        var source = new DropSource(() => true, () => false, () => { throw new Exception("Unexpected Drop"); });
+        source.CanStart();
+        source.PollRelease(0, false, false, () => exits++);
+        source.PollRelease(1000, false, false, () => exits++);
+        Check(source.QueryContinueDrag(false, 0) == 0x40101, "release timeout latches cancellation");
+        source.PollRelease(1900, true, false, () => exits++);
+        source.PollRelease(2000, true, false, () => exits++);
+        Check(exits == 1, "new physical press cannot reset retirement of a cancelled gesture");
+        source.Finish();
+    }
     static void WatchdogTests() {
         int exits = 0, commits = 0;
         Action exit = () => exits++;
@@ -209,7 +259,9 @@ class ShellLifecycleTest {
                 poll.Start(); release.Start(); start.Set();
                 if (!poll.Join(2000) || !release.Join(2000)) throw new Exception("race did not finish");
             }
-            if (!((result == 0x40100 && commits == 1 && exits == 0) || (result == 0x40101 && commits == 0 && exits == 1))) {
+            // A progress frame may already have been emitted before cancellation.
+            // Only returning DROP authorizes the target to perform file work.
+            if (!((result == 0x40100 && commits == 1 && exits == 0) || (result == 0x40101 && commits <= 1 && exits == 1))) {
                 throw new Exception("watchdog must not race a committed drop");
             }
             source.Finish();
@@ -321,6 +373,16 @@ class ShellLifecycleTest {
         if (args[0] == "drag") { DragTests(); return 0; }
         if (args[0] == "release-ordering") { ReleaseOrderingTest(); return 0; }
         if (args[0] == "watchdog") { WatchdogTests(); return 0; }
+        if (args[0] == "blocked-commit-report") { BlockedCommitReportTest(); return 0; }
+        if (args[0] == "late-report") { LateReportTests(); return 0; }
+        if (args[0] == "latched-cancel") { LatchedCancellationTest(); return 0; }
+        if (args[0] == "parent-alive") {
+            int disconnected = 0;
+            ParentProcessWatch.Start(() => Interlocked.Increment(ref disconnected));
+            Thread.Sleep(300);
+            Check(disconnected == 0, "parent watcher does not disconnect a live fixture parent at startup");
+            return 0;
+        }
         if (args[0] == "races") { RaceTests(); return 0; }
         if (args[0] == "progress") { ProgressTests(); return 0; }
         if (args[0].StartsWith("queue")) { QueueTests(args[0].EndsWith("error"), args[0].Contains("cancel")); return 0; }
@@ -337,6 +399,18 @@ class ShellLifecycleTest {
         });
         failSafe.IsBackground = true;
         failSafe.Start();
+        if (args[0] == "blocked-commit-watch") {
+            var source = new DropSource(() => true, () => false, () => {
+                evidence.WriteLine("RELEASE_REPORT_BLOCKED");
+                new ManualResetEvent(false).WaitOne();
+            });
+            source.CanStart();
+            // All input readings are synthetic. Even a new held press must not
+            // disable retirement after OLE has delivered logical button-up.
+            source.WatchRelease(() => false, DropSource.ExitCancelledDrag);
+            source.QueryContinueDrag(false, 0);
+            return 1;
+        }
         if (args[0] == "blocked-shutdown") {
             var lifetime = new ShellLifetime(action => action(), line => {}, () => {
                 evidence.WriteLine("SHUTDOWN_BLOCKED");

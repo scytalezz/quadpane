@@ -169,13 +169,13 @@ test('cancel rejects active and queued requests and stale worker events cannot p
 
 for (const failure of ['exit', 'pipe', 'protocol']) test(`${failure} rejects queue and allows a fresh helper`, async t => {
   const f = fixture(t);
-  const code = failure === 'exit' ? 'SHELL_HELPER_EXITED' : failure === 'pipe' ? 'EPIPE' : 'SHELL_PROTOCOL_ERROR';
+  const code = failure === 'exit' ? 'SHELL_HELPER_EXITED' : failure === 'pipe' ? 'SHELL_DISCONNECTED' : 'SHELL_PROTOCOL_ERROR';
   const rejected = Promise.all(['readClipboard', 'completePaste', 'drag'].map(mode =>
     assert.rejects(f.show(mode), { code })));
   await f.waitFor(1);
   const old = f.workers[0];
   if (failure === 'exit') old.emit('exit', 7, null);
-  else if (failure === 'pipe') old.stdin.emit('error', Object.assign(new Error('broken pipe'), { code }));
+  else if (failure === 'pipe') old.stdin.emit('error', Object.assign(new Error('broken pipe'), { code: 'EPIPE' }));
   else old.stdout.write('invalid JSON\n');
   await rejected;
   const next = f.show('readClipboard');
@@ -389,6 +389,206 @@ for (const action of ['cancel', 'close']) test(`${action} still revokes interact
     if (closing) await bounded(closing);
     assert.equal(f.sent.length, 1);
   }
+});
+
+for (const event of ['end', 'close']) test(`stdout ${event} without process exit releases an interactive drag but preserves retirement ownership`, async t => {
+  const timers = fakeTimers(), f = fixture(t, { timers, timeouts: { ...shortTimeouts, validationMs: 100 }, exitOnKill: false });
+  const rejected = assert.rejects(f.show('drag'), { code: 'SHELL_DISCONNECTED', phase: 'interactive', outcomeUncertain: true });
+  await f.waitFor(1);
+  const worker = f.workers[0];
+  worker.stdout.write(JSON.stringify({ id: f.sent[0].id, phase: 'interactive' }) + '\n');
+  if (event === 'end') worker.stdout.end();
+  else worker.stdout.destroy();
+  await bounded(rejected);
+  assert.equal(f.service.pending, false);
+  const blocked = assert.rejects(f.show('readClipboard'), { code: 'SHELL_RECOVERY_FAILED' });
+  await new Promise(resolve => setImmediate(resolve));
+  timers.advance(30);
+  await bounded(blocked);
+  assert.equal(f.workers.length, 1, 'stream closure is not proof of process exit');
+  worker.emit('exit', 1);
+  const next = f.show('readClipboard');
+  await f.waitFor(2); f.reply(1, 'fresh');
+  assert.equal(await bounded(next), 'fresh');
+});
+
+for (const event of ['end', 'close']) test(`stdout ${event} during commit reports uncertainty without terminating external work`, async t => {
+  const timers = fakeTimers(), f = fixture(t, { timers, timeouts: shortTimeouts });
+  const rejected = assert.rejects(f.show('drag'), { code: 'SHELL_DISCONNECTED', outcomeUncertain: true, phase: 'committing', retryable: false });
+  await f.waitFor(1);
+  const worker = f.workers[0];
+  worker.stdout.write(JSON.stringify({ id: f.sent[0].id, phase: 'committing' }) + '\n');
+  if (event === 'end') worker.stdout.end();
+  else worker.stdout.destroy();
+  await bounded(rejected);
+  assert.equal(f.service.pending, false);
+  await assert.rejects(f.show('readClipboard'), { code: 'SHELL_RECOVERY_FAILED' });
+  assert.deepEqual(await f.service.cancel(), [{ exited: false }]);
+  assert.deepEqual(await f.service.close(), [{ exited: false }]);
+  timers.advance(1000);
+  f.lifecycle.emit('exit');
+  assert.equal(worker.killed, undefined);
+  assert.equal(worker.stdin.writableEnded, false);
+  assert.equal(worker.stdin.destroyed, false);
+  assert.equal(f.sent.length, 1);
+  assert.equal(f.workers.length, 1);
+  worker.emit('exit', 0);
+  assert.deepEqual(await f.service.cancel(), [], 'actual exit releases ownership');
+});
+
+test('closing a real child response stream settles the drag while the child remains alive', { timeout: 5000 }, async t => {
+  const { spawn } = require('node:child_process');
+  const { once } = require('node:events');
+  let worker, exited, kills = 0;
+  const script = `
+    process.on('message', () => process.exit(0));
+    require('node:readline').createInterface({ input: process.stdin }).once('line', line => {
+      const { id } = JSON.parse(line);
+      process.stdout.write(JSON.stringify({ id, phase: 'interactive' }) + '\\n');
+    });
+  `;
+  const service = createShellMenuService('fixture', { lifecycle: new EventEmitter(), spawn() {
+    worker = spawn(process.execPath, ['-e', script], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+    exited = once(worker, 'close');
+    worker.stdout.once('data', () => setImmediate(() => worker.stdout.destroy()));
+    // No OS termination, even for this private test child. It exits only when
+    // the test sends its dedicated completion message over a separate channel.
+    worker.kill = () => { kills++; return false; };
+    return worker;
+  } });
+  t.after(async () => {
+    if (worker?.connected) worker.send('finish');
+    if (exited) await exited;
+    await service.close();
+  });
+  await bounded(assert.rejects(service.show({ parent: __dirname, paths: [] }, {}, 'drag'), {
+    code: 'SHELL_DISCONNECTED', outcomeUncertain: true,
+  }));
+  assert.equal(worker.exitCode, null, 'response stream closure does not mean the process exited');
+  assert.equal(worker.signalCode, null);
+  assert.equal(service.pending, false);
+  assert.equal(kills, 1, 'normal uncommitted retirement was requested but no process was killed');
+  assert.throws(() => service.start(), { code: 'SHELL_RECOVERY_FAILED' });
+  worker.send('finish');
+  await exited;
+  assert.deepEqual(await service.cancel(), []);
+});
+
+test('a terminal reply flushed at EOF settles before retiring the response channel', async t => {
+  const f = fixture(t);
+  const request = f.show('drag');
+  await f.waitFor(1);
+  const { worker, id } = f.sent[0];
+  worker.stdout.end(JSON.stringify({ id, ok: true, value: 'finished' }));
+  assert.equal(await bounded(request), 'finished');
+  assert.equal(f.service.pending, false);
+});
+
+test('stdout destroy with ECONNRESET after commit cannot crash through readline or terminate the worker', () => {
+  const { spawnSync } = require('node:child_process');
+  const script = `
+    const assert = require('node:assert/strict');
+    const { EventEmitter } = require('node:events');
+    const { PassThrough } = require('node:stream');
+    const { createShellMenuService } = require(${JSON.stringify(require.resolve('./shell-menu.cjs'))});
+    const worker = new EventEmitter();
+    worker.stdin = new PassThrough(); worker.stdout = new PassThrough(); worker.stderr = new PassThrough();
+    let kills = 0;
+    worker.kill = () => { kills++; return true; };
+    const service = createShellMenuService('fake.exe', { lifecycle: new EventEmitter(), spawn: () => worker, validate: () => ({}) });
+    (async () => {
+      const rejected = assert.rejects(service.show({}, {}, 'drag'), {
+        code: 'SHELL_DISCONNECTED', transportCode: 'ECONNRESET', phase: 'committing', outcomeUncertain: true, retryable: false,
+      });
+      await new Promise(resolve => setImmediate(resolve));
+      const { id } = JSON.parse(worker.stdin.read());
+      worker.stdout.write(JSON.stringify({ id, phase: 'committing' }) + '\\n');
+      worker.stdout.destroy(Object.assign(new Error('connection reset'), { code: 'ECONNRESET' }));
+      await rejected;
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(kills, 0);
+      assert.equal(worker.stdin.writableEnded, false);
+      assert.equal(service.pending, false);
+      assert.deepEqual(await service.close(), [{ exited: false }]);
+      worker.emit('exit', 0);
+      process.stdout.write('protected');
+    })().catch(error => { console.error(error); process.exit(1); });
+  `;
+  const result = spawnSync(process.execPath, ['-e', script], { windowsHide: true, encoding: 'utf8', timeout: 3000 });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'protected');
+});
+
+for (const stream of ['stdout', 'stdin', 'stderr']) {
+  for (const phase of ['interactive', 'committing']) test(`${stream} error before close during ${phase} settles once and preserves retirement safety`, async t => {
+    const f = fixture(t, { exitOnKill: false, timers: fakeTimers() });
+    const rejected = assert.rejects(f.show('drag'), {
+      code: 'SHELL_DISCONNECTED', transportCode: 'ECONNRESET', phase, outcomeUncertain: true, retryable: false,
+    });
+    await f.waitFor(1);
+    const worker = f.workers[0];
+    worker.stdout.write(JSON.stringify({ id: f.sent[0].id, phase }) + '\n');
+    const error = Object.assign(new Error('connection reset'), { code: 'ECONNRESET' });
+    assert.doesNotThrow(() => worker[stream].emit('error', error));
+    await bounded(rejected);
+    assert.equal(f.service.pending, false);
+    assert.equal(worker.killCount || 0, phase === 'committing' ? 0 : 1);
+    assert.equal(worker.stdin.writableEnded, phase !== 'committing');
+    assert.doesNotThrow(() => worker[stream].emit('error', error));
+    worker.stdout.emit('close');
+    assert.equal(worker.killCount || 0, phase === 'committing' ? 0 : 1, 'duplicate events cannot retire twice');
+    worker.emit('exit', 0);
+    const next = f.show('readClipboard');
+    await f.waitFor(2);
+    assert.doesNotThrow(() => worker.stdout.emit('error', error));
+    worker.stdin.emit('error', error);
+    worker.stderr.emit('error', error);
+    worker.stdout.emit('close');
+    assert.equal(f.workers[1].killed, undefined);
+    f.reply(1, 'fresh');
+    assert.equal(await bounded(next), 'fresh');
+    assert.equal(f.sent.length, 2, 'no automatic replay');
+  });
+}
+
+for (const response of ['invalid JSON', JSON.stringify({ id: '1', phase: 'invalid' })]) {
+  test(`protocol failure after commit preserves ownership and uncertainty: ${response}`, async t => {
+    const f = fixture(t);
+    const rejected = assert.rejects(f.show('drag'), {
+      code: 'SHELL_PROTOCOL_ERROR', phase: 'committing', outcomeUncertain: true, retryable: false,
+    });
+    await f.waitFor(1);
+    const worker = f.workers[0];
+    worker.stdout.write(JSON.stringify({ id: f.sent[0].id, phase: 'committing' }) + '\n');
+    worker.stdout.write(response + '\n');
+    await bounded(rejected);
+    assert.equal(worker.killed, undefined);
+    assert.equal(worker.stdin.writableEnded, false);
+    await assert.rejects(f.show('readClipboard'), { code: 'SHELL_RECOVERY_FAILED' });
+    worker.emit('exit', 1);
+    const next = f.show('readClipboard');
+    await f.waitFor(2); f.reply(1, 'fresh');
+    assert.equal(await bounded(next), 'fresh');
+  });
+}
+
+test('exit before stdout closure keeps its exit result and cannot retire a replacement', async t => {
+  const f = fixture(t);
+  const rejected = assert.rejects(f.show('drag'), { code: 'SHELL_CANCELLED', exitCode: 2 });
+  await f.waitFor(1);
+  const old = f.workers[0];
+  old.stdout.write(JSON.stringify({ id: f.sent[0].id, phase: 'interactive' }) + '\n');
+  old.emit('exit', 2, null);
+  await bounded(rejected);
+  const next = f.show('readClipboard');
+  await f.waitFor(2);
+  old.stdout.end();
+  old.stdout.destroy();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(old.killed, undefined);
+  assert.equal(f.workers[1].killed, undefined);
+  f.reply(1, 'fresh');
+  assert.equal(await bounded(next), 'fresh');
 });
 
 test('clipboard cannot escape its deadline using an interactive phase', async t => {

@@ -107,3 +107,40 @@ test('a timeout without certainty metadata conservatively reports an unknown out
   const result = shellErrorResult({ code: 'SHELL_TIMEOUT', message: 'expired' }, 'pane:shell-menu');
   assert.match(result.error.message, /결과를 확인할 수 없습니다/);
 });
+
+test('shell and mutation busy messages identify different reservations', () => {
+  const { shellErrorResult } = require('./shell-errors.cjs');
+  const shell = shellErrorResult({ code: 'SHELL_BUSY' }, 'pane:begin-native-drag').error;
+  const mutation = shellErrorResult({ code: 'ACTION_BUSY' }, 'pane:begin-native-drag').error;
+  assert.match(shell.message, /진행 중인 Windows 셸 메뉴·드래그/);
+  assert.match(mutation.message, /진행 중인 파일 작업/);
+  assert.doesNotMatch(mutation.message, /메뉴·드래그/);
+});
+
+test('disconnected shell IPC errors preserve commit uncertainty and actionable Korean messages', async () => {
+  for (const [phase, outcomeUncertain] of [['interactive', true], ['committing', true], ['queued', false]]) {
+    const details = { code: 'SHELL_DISCONNECTED', transportCode: 'ECONNRESET', requestId: '9', mode: 'drag', phase, outcomeUncertain, retryable: false };
+    const ipc = handlersFor(Object.assign(new Error('Windows shell helper response stream closed'), details));
+    const result = await ipc.invoke('pane:begin-native-drag', requestFor('pane:begin-native-drag'));
+    for (const [key, value] of Object.entries(details)) assert.equal(result.error[key], value);
+    assert.match(result.error.message, /자동으로 다시 시도하지 않습니다/);
+    if (phase === 'committing') {
+      assert.match(result.error.message, /완료·취소 여부를 확인할 수 없습니다/);
+      assert.match(result.error.message, /원본과 대상 폴더/);
+      assert.doesNotMatch(result.error.message, /취소되었습니다|다시 시도해 주세요/);
+    } else {
+      assert.match(result.error.message, /복구/);
+      if (!outcomeUncertain) assert.match(result.error.message, /실행되기 전에/);
+    }
+  }
+});
+
+test('protocol failure after commit retains its code without advising an uncertain move be repeated', async () => {
+  const details = { code: 'SHELL_PROTOCOL_ERROR', phase: 'committing', outcomeUncertain: true, retryable: false };
+  const ipc = handlersFor(Object.assign(new Error('Invalid shell helper response'), details));
+  const result = await ipc.invoke('pane:begin-native-drag', requestFor('pane:begin-native-drag'));
+  for (const [key, value] of Object.entries(details)) assert.equal(result.error[key], value);
+  assert.match(result.error.message, /완료·취소 여부를 확인할 수 없습니다/);
+  assert.match(result.error.message, /자동으로 다시 시도하지 않습니다/);
+  assert.doesNotMatch(result.error.message, /다시 시도해 주세요/);
+});

@@ -39,7 +39,9 @@ require(${JSON.stringify(path.join(project, 'desktop', 'main.cjs'))});
 let application, page;
 const checks = [], errors = [];
 const row = (name, index = 0) => page.locator(`#panel-design-${index} tr[data-file]`).filter({ has: page.locator('.file-name > span', { hasText: new RegExp(`^${name.replaceAll('.', '\\.')}$`) }) });
-async function idle() { await page.waitForFunction(() => document.querySelector('#activity-strip').getAttribute('aria-busy') === 'false'); }
+// Internal transfers must finish while an outgoing native drag is still pending.
+// The activity strip now includes that native request; paste tracks file work.
+async function idle() { await page.waitForFunction(() => document.querySelector('#paste-button').getAttribute('aria-busy') === 'false'); }
 async function calls() { return application.evaluate(() => global.nativeCalls); }
 async function count(type) { return (await calls()).filter(call => call.type === type).length; }
 const cancelled = { ok: false, error: { code: 'SHELL_CANCELLED', message: 'Test cancellation' } };

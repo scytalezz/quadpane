@@ -47,7 +47,7 @@ public interface IDropSource {
 [ComVisible(true), ClassInterface(ClassInterfaceType.None)]
 public class DropSource : IDropSource {
     const int Drop = 0x40100, Cancel = 0x40101;
-    enum Phase { Dragging, Cancelled, Committing, Finished }
+    enum Phase { Dragging, ReportingRelease, Cancelled, Committing, Finished }
     readonly object gate = new object();
     readonly Func<bool> buttonDown, disconnected;
     readonly Func<long> milliseconds;
@@ -88,7 +88,9 @@ public class DropSource : IDropSource {
                 // An unarmed source must never manufacture a drop. Preflight
                 // can arm it: OLE need not call us before the first release.
                 if (!armed) { phase = Phase.Cancelled; return Cancel; }
-                phase = Phase.Committing; // Disable the watchdog BEFORE Drop can run.
+                // Reporting can block on stdout. OLE cannot call Drop until we
+                // return, so this phase must remain cancellable by the watchdog.
+                phase = Phase.ReportingRelease;
             } else {
                 // Physical state can run ahead of OLE's queued release callback.
                 // Allow a bounded delivery grace, but only OLE may authorize DROP.
@@ -104,13 +106,23 @@ public class DropSource : IDropSource {
             }
         }
         committing();
-        return Drop;
+        lock (gate) {
+            // A late report must not revive a retired or disconnected gesture.
+            if (phase != Phase.ReportingRelease || disconnected()) {
+                if (phase != Phase.Finished) phase = Phase.Cancelled;
+                return Cancel;
+            }
+            phase = Phase.Committing; // No blocking work between this and DROP.
+            return Drop;
+        }
     }
     public int GiveFeedback(uint effect) { return 0x40102; }
     internal void PollRelease(long milliseconds, bool down, bool captured, Action exit) {
         lock (gate) {
             if (phase == Phase.Committing || phase == Phase.Finished) return;
-            if (down) { releasedSince = -1; return; }
+            // A new press cannot postpone retirement after logical release or
+            // latched cancellation; it belongs to a different gesture.
+            if (down && phase == Phase.Dragging) { releasedSince = -1; return; }
             if (releasedSince < 0) releasedSince = milliseconds;
             if (milliseconds - releasedSince >= 1000) phase = Phase.Cancelled;
             // Let a responsive OLE loop observe CANCEL first. If no input is
@@ -559,13 +571,13 @@ class ShellHost : Form {
                         var source = new DropSource(NativeDragInput.PrimaryDown, () => ParentDisconnected,
                             () => Phase(request, "committing"));
                         if (!source.CanStart()) return CancelledDrag();
-                        Phase(request, "interactive");
                         // Shell data object negotiates optimized moves with Explorer.
                         // Never delete sources ourselves: the target owns the transfer.
                         int result;
                         uint thread = NativeDragInput.GetCurrentThreadId();
                         try {
                             source.WatchRelease(() => NativeDragInput.HasCapture(thread), DropSource.ExitCancelledDrag);
+                            Phase(request, "interactive");
                             if (!source.CanStart()) return CancelledDrag();
                             result = DoDragDrop((System.Runtime.InteropServices.ComTypes.IDataObject)data, source, 3, out effect);
                         } finally { source.Finish(); }

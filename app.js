@@ -137,6 +137,7 @@ let nativeDragPending = null;
 let dropTarget = null;
 let shellMenuPending = false;
 let shellCancelPending = null;
+let shellRecoveryNeeded = null;
 let marquee = null;
 let marqueeGuard = false;
 let toastTimer;
@@ -437,7 +438,7 @@ function selectFile(pane,fileId,{toggle = false,range = false} = {}) {
 async function copySelection(operation) {
   const pane = activePane();
   const files = selectedFiles();
-  if (!files.length || transferPending || !paneCanReceiveFiles(pane) || typeof bridge.transfer !== 'function') return;
+  if (!files.length || transferPending || shellClipboardBlocked() || !paneCanReceiveFiles(pane) || typeof bridge.transfer !== 'function') return;
   const nextClipboard = {operation,sources:files.map((file) => file.path)};
   const revision = ++clipboardRevision;
   clipboard = nextClipboard;
@@ -594,6 +595,7 @@ async function transferFiles(sources,destination,operation,fromClipboard) {
   await refreshAffected(affectedPath,operation==='move'?result.completed:[]);
 }
 async function syncShellClipboard() {
+  if (shellClipboardBlocked()) return false;
   if (typeof bridge.readShellClipboard!=='function') return true;
   const token = ++clipboardReadToken;
   const revision = clipboardRevision;
@@ -611,7 +613,7 @@ async function syncShellClipboard() {
   return true;
 }
 async function pasteSelection(pane = activePane(),destination = pane?.path) {
-  if (transferPending || !paneCanReceiveFiles(pane) || !destination || typeof bridge.transfer!=='function') return;
+  if (transferPending || shellClipboardBlocked() || !paneCanReceiveFiles(pane) || !destination || typeof bridge.transfer!=='function') return;
   // Capture the destination and reserve before any await, including an unfinished copy.
   await runMutation('클립보드 확인 중…','paste',destination,async () => {
     const waitingForCopy = clipboardWritesPending > 0;
@@ -625,7 +627,7 @@ async function pasteSelection(pane = activePane(),destination = pane?.path) {
 }
 function openTransferDialog() {
   const files = selectedFiles();
-  if (!files.length || transferPending || activePane().loading || activePane().error) return;
+  if (!files.length || transferPending || shellClipboardBlocked() || activePane().loading || activePane().error) return;
   transferDraft = {sources:files.map((file) => file.path),destination:null};
   $('#transfer-description').textContent = `${files.length}개 항목을 보낼 폴더를 선택하세요. 다른 작업 공간의 창도 선택할 수 있어요.`;
   $('[name="transfer-operation"][value="copy"]').checked = true;
@@ -679,6 +681,7 @@ async function openContextMenu(pane,row,x,y,extended = false) {
     try {
       const result = await bridge.shellMenu({parent:pane.path,paths:files.map((file) => file.path),x,y,extended});
       if (!result?.ok) {
+        rememberShellRecovery(result?.error);
         if (result?.error?.code==='SHELL_CANCELLED') return;
         throw new Error(result?.error?.message || 'Windows 메뉴를 열지 못했어요.');
       }
@@ -691,7 +694,7 @@ async function openContextMenu(pane,row,x,y,extended = false) {
         return;
       }
       await refreshAffected(() => true);
-    } catch (error) {showToast(error.message || 'Windows 메뉴를 열지 못했어요.');}
+    } catch (error) {rememberShellRecovery(error);showToast(error.message || 'Windows 메뉴를 열지 못했어요.');}
     finally {shellMenuPending = false;transferPending = false;updateSelection();}
     try {await syncShellClipboard();} catch { /* clipboard can be temporarily busy */ }
     return;
@@ -846,6 +849,7 @@ function clearDragState() {
 async function startNativeDrag(sources,pane) {
   clearDragState();
   const drag = {sources,originPaneId:pane.id,native:true};
+  const recovery = shellRecoveryNeeded;
   // A drop clears the visual/source state before the native IPC can return.
   // Keep its reservation separate, without blocking the in-app file transfer.
   nativeDragPending = internalDrag = drag;
@@ -854,9 +858,12 @@ async function startNativeDrag(sources,pane) {
   try {
     const result = await bridge.beginNativeDrag(sources);
     if (nativeDragPending!==drag) return;
+    if (!result?.ok) rememberShellRecovery(result?.error);
+    else if (shellRecoveryNeeded===recovery) shellRecoveryNeeded = null;
     if (!result?.ok && result?.error?.code!=='SHELL_CANCELLED') showToast(result?.error?.message || '파일을 창 밖으로 끌지 못했어요.');
     else if (result?.value?.sourceRetained) showToast('대상 앱이 원본 삭제를 요청했지만 원본을 보존했어요. 대상에서 복사 결과를 확인해 주세요.');
   } catch (error) {
+    if (nativeDragPending===drag) rememberShellRecovery(error);
     if (nativeDragPending===drag && error?.code!=='SHELL_CANCELLED') showToast(error.message || '파일을 창 밖으로 끌지 못했어요.');
   } finally {
     if (nativeDragPending===drag) {
@@ -867,15 +874,26 @@ async function startNativeDrag(sources,pane) {
     }
   }
 }
+function shellClipboardBlocked() {
+  return Boolean(nativeDragPending || shellMenuPending || shellCancelPending || shellRecoveryNeeded);
+}
+function rememberShellRecovery(error) {
+  if (['SHELL_BUSY','SHELL_RECOVERY_FAILED','SHELL_DISCONNECTED','DISCONNECTED'].includes(error?.code)) shellRecoveryNeeded = error;
+}
 async function cancelShellInteraction() {
-  if (shellCancelPending || typeof bridge.cancelShell!=='function') return;
+  if (shellCancelPending || (transferPending && !shellMenuPending) || !(nativeDragPending || shellMenuPending || shellRecoveryNeeded) || typeof bridge.cancelShell!=='function') return;
+  // A newer failure from the original request still needs explicit recovery.
+  const recovery = shellRecoveryNeeded;
   const cancellation = {};
   shellCancelPending = cancellation;
   updateSelection();
   try {
     const result = await bridge.cancelShell();
-    if (!result?.ok) showToast(result?.error?.message || 'Windows 작업을 취소하지 못했어요.');
-  } catch (error) {showToast(error.message || 'Windows 작업을 취소하지 못했어요.');}
+    if (!result?.ok) {
+      shellRecoveryNeeded = result?.error || {};
+      showToast(result?.error?.message || 'Windows 작업을 취소하지 못했어요.');
+    } else if (shellRecoveryNeeded===recovery) shellRecoveryNeeded = null;
+  } catch (error) {shellRecoveryNeeded = error;showToast(error.message || 'Windows 작업을 취소하지 못했어요.');}
   finally {
     // Only the original drag/menu response releases its reservation. A cancel
     // acknowledgement can arrive first, or fail while that operation is live.
@@ -1180,7 +1198,7 @@ function updateSelection() {
   $('#refresh-button').setAttribute('aria-busy',String(current.loading));
   $('#file-info-button').disabled = !selectedFile();
   const files = selectedFiles();
-  const canTransfer = typeof bridge.transfer === 'function' && !transferPending;
+  const canTransfer = typeof bridge.transfer === 'function' && !transferPending && !shellClipboardBlocked();
   $('#copy-button').disabled = !canTransfer || !files.length || !paneCanReceiveFiles(current);
   $('#cut-button').disabled = !canTransfer || !files.length || !paneCanReceiveFiles(current);
   $('#transfer-button').disabled = !canTransfer || !files.length || current.loading || Boolean(current.error);
@@ -1189,9 +1207,20 @@ function updateSelection() {
   $('#add-favorite-button').disabled = !current.loaded || current.loading || favoriteExists || typeof bridge.savePreferences !== 'function';
   $('#add-favorite-button').title = favoriteExists ? '이미 즐겨찾기에 있는 폴더' : '현재 폴더 즐겨찾기 추가';
   const clipboardStatus = $('#clipboard-status');
-  clipboardStatus.textContent = transferPending ? mutationLabel || '파일 작업 중… 완료될 때까지 기다려 주세요.' : clipboard ? `${clipboard.sources.length}개 항목 ${clipboard.operation==='move'?'이동':'복사'} 준비 · 대상 창에서 붙여넣기 (Ctrl + V)` : '오른쪽 클릭으로 파일 작업 · 창 사이로 끌어서 이동';
+  clipboardStatus.textContent = transferPending && !shellMenuPending ? mutationLabel || '파일 작업 중… 완료될 때까지 기다려 주세요.'
+    : shellCancelPending ? 'Windows 작업 복구 응답을 기다리고 있어요…'
+    : nativeDragPending ? '다른 앱으로 드래그 중… 완료 응답을 기다리고 있어요. 멈췄다면 드래그 취소 또는 Esc를 누르세요.'
+    : shellRecoveryNeeded ? 'Windows 작업 응답을 확인하지 못했어요. Windows 작업 복구 후 다시 시도해 주세요.'
+    : shellMenuPending ? 'Windows 메뉴 작업 중…'
+    : clipboard ? `${clipboard.sources.length}개 항목 ${clipboard.operation==='move'?'이동':'복사'} 준비 · 대상 창에서 붙여넣기 (Ctrl + V)` : '오른쪽 클릭으로 파일 작업 · 창 사이로 끌어서 이동';
   clipboardStatus.title = clipboardStatus.textContent;
-  $('#activity-strip').setAttribute('aria-busy',String(transferPending));
+  const recoveryButton = $('#shell-recovery-button');
+  recoveryButton.hidden = !(nativeDragPending || shellMenuPending || shellCancelPending || shellRecoveryNeeded) || typeof bridge.cancelShell!=='function';
+  recoveryButton.textContent = shellRecoveryNeeded || shellMenuPending || !nativeDragPending ? 'Windows 작업 복구' : '드래그 취소';
+  recoveryButton.disabled = Boolean(shellCancelPending || (transferPending && !shellMenuPending));
+  recoveryButton.setAttribute('aria-busy',String(Boolean(shellCancelPending)));
+  recoveryButton.title = transferPending && !shellMenuPending ? '파일 작업이 끝난 뒤 Windows 작업을 복구할 수 있어요.' : '응답을 기다리는 Windows 작업 취소 및 복구 (Esc)';
+  $('#activity-strip').setAttribute('aria-busy',String(Boolean(transferPending || nativeDragPending || shellCancelPending)));
   $('#paste-button').setAttribute('aria-busy',String(transferPending));
   $('#toolbar-context').innerHTML = `${icon('folder')}<span>현재 창</span><strong title="${escapeHtml(current.path)}">${escapeHtml(current.name)}</strong>`;
   $('#selection-status').textContent = files.length ? `${files.length}개 선택${files.some((file) => file.type!=='folder')?` · ${sizeText(files.reduce((total,file) => total+(file.size || 0),0))}`:''}` : `${visiblePanes().length}개 창 열림`;
@@ -1716,6 +1745,7 @@ $('#refresh-button').addEventListener('click',() => navigate(activePane(),active
 $('#file-info-button').addEventListener('click',() => openInfo(selectedFile()));
 $('#add-favorite-button').addEventListener('click',addFavorite);
 $('#copy-button').addEventListener('click',() => copySelection('copy'));
+$('#shell-recovery-button').addEventListener('click',cancelShellInteraction);
 $('#cut-button').addEventListener('click',() => copySelection('move'));
 $('#paste-button').addEventListener('click',() => pasteSelection());
 $('#transfer-button').addEventListener('click',openTransferDialog);
@@ -1807,7 +1837,7 @@ $('#help-button').addEventListener('click',() => {
   $('#info-dialog').showModal();
 });
 document.addEventListener('keydown',(event) => {
-  if (event.key!=='Escape' || !(nativeDragPending || shellMenuPending || shellCancelPending)) return;
+  if (event.key!=='Escape' || !(nativeDragPending || shellMenuPending || shellCancelPending || shellRecoveryNeeded)) return;
   event.preventDefault();event.stopImmediatePropagation();
   cancelShellInteraction();
 },true);

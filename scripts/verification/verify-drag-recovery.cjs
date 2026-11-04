@@ -55,6 +55,7 @@ async function fixture(native = true) {
       saveSession: async () => ok(null),
       savePreferences: async value => ok(value),
       readShellClipboard: async () => { f.calls.push({ type: 'clipboard' }); return ok({ sources: [], operation: 'copy' }); },
+      writeShellClipboard: async value => { f.calls.push({ type: 'clipboardWrite', value }); return ok(null); },
       updateState: async () => ok(update),
       installUpdate: async () => { f.calls.push({ type: 'install' }); return ok({ restarting: true }); },
       transfer: request => defer('transfer', request),
@@ -111,9 +112,94 @@ async function scenario(name, run, native = true) {
 
 (async () => {
   browser = await chromium.launch({ channel: 'msedge', headless: true });
+  await scenario('Visible recovery control reserves native drag through early acknowledgement and blocks clipboard collisions', async page => {
+    const button = page.getByRole('button', { name: '드래그 취소', exact: true });
+    assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
+    await start(page);
+    assert.equal(await button.isVisible(), true);
+    assert.match(await page.locator('#clipboard-status').textContent(), /다른 앱으로 드래그 중.*완료 응답/);
+    assert.equal(await page.locator('#activity-strip').getAttribute('aria-busy'), 'true');
+    for (const id of ['copy', 'cut', 'paste', 'transfer']) assert.equal(await page.locator(`#${id}-button`).isDisabled(), true);
+    const reads = await count(page, 'clipboard');
+    await page.locator('#panel-design-0').focus();
+    for (const key of ['c', 'x', 'v']) await page.keyboard.press(`Control+${key}`);
+    assert.equal(await count(page, 'clipboardWrite'), 0);
+    assert.equal(await count(page, 'clipboard'), reads);
+    assert.equal(await count(page, 'transfer'), 0);
+    await page.setViewportSize({ width: 520, height: 720 });
+    const box = await button.boundingBox(), strip = await page.locator('#activity-strip').boundingBox();
+    assert.ok(box && strip && box.x >= strip.x && box.x + box.width <= strip.x + strip.width + 1, 'Recovery remains visible in the narrow activity bar');
+    await button.click();
+    assert.equal(await button.isDisabled(), true);
+    assert.equal(await button.getAttribute('aria-busy'), 'true');
+    await escape(page);
+    await button.dispatchEvent('click');
+    assert.equal(await count(page, 'cancel'), 1, 'Clicks and Esc cannot duplicate an outstanding recovery');
+    await settle(page, 'cancel');
+    assert.equal(await button.isEnabled(), true);
+    assert.equal(await button.isVisible(), true);
+    assert.equal(await page.locator('#copy-button').isDisabled(), true);
+    await start(page);
+    assert.equal(await count(page, 'drag'), 1, 'Successful early acknowledgement must preserve the original reservation');
+    await settle(page, 'drag', failure('SHELL_CANCELLED'));
+    assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
+    assert.equal(await page.locator('#activity-strip').getAttribute('aria-busy'), 'false');
+    assert.equal(await page.locator('#copy-button').isEnabled(), true);
+    await page.locator('#shell-recovery-button').dispatchEvent('click');
+    await escape(page);
+    assert.equal(await count(page, 'cancel'), 1, 'Completed recovery is request-free even for a stale click');
+    await start(page);
+    assert.equal(await count(page, 'drag'), 2, 'A new deliberate gesture works after the original response');
+    await settle(page, 'drag', ok({ action: 'drop' }));
+  });
+  await scenario('Resolved busy/disconnected failures retain manual recovery; failed acknowledgements stay actionable and success clears them', async page => {
+    const button = page.locator('#shell-recovery-button');
+    for (const code of ['SHELL_BUSY', 'SHELL_RECOVERY_FAILED', 'SHELL_DISCONNECTED', 'DISCONNECTED']) {
+      for (const rejected of [false, true]) {
+        await start(page);
+        await settle(page, 'drag', failure(code), rejected);
+        const drags = await count(page, 'drag'), cancels = await count(page, 'cancel');
+        assert.equal(await button.isVisible(), true);
+        assert.equal(await button.textContent(), 'Windows 작업 복구');
+        assert.match(await page.locator('#clipboard-status').textContent(), /Windows 작업 복구 후/);
+        assert.equal(await page.locator('#copy-button').isDisabled(), true);
+        await button.click();
+        assert.equal(await button.isDisabled(), true);
+        await escape(page); await button.dispatchEvent('click');
+        assert.equal(await count(page, 'cancel'), cancels + 1);
+        await settle(page, 'cancel', failure('SHELL_RECOVERY_FAILED'), rejected);
+        assert.equal(await button.isVisible(), true);
+        assert.equal(await button.isEnabled(), true);
+        assert.match(await page.locator('#toast').textContent(), /SHELL_RECOVERY_FAILED/);
+        assert.equal(await count(page, 'drag'), drags, 'Neither error nor failed recovery replays drag');
+        await button.click();
+        await settle(page, 'cancel');
+        assert.equal(await button.isHidden(), true);
+        assert.equal(await page.locator('#copy-button').isEnabled(), true);
+        await button.dispatchEvent('click'); await escape(page);
+        assert.equal(await count(page, 'cancel'), cancels + 2, 'Completed recovery sends no repeated requests');
+        assert.equal(await count(page, 'drag'), drags);
+        assert.equal(await count(page, 'transfer'), 0);
+      }
+    }
+  });
+  await scenario('Late success acknowledgement cannot erase a newer recovery failure from the original drag', async page => {
+    await start(page);
+    await page.locator('#shell-recovery-button').click();
+    await settle(page, 'drag', failure('SHELL_DISCONNECTED'));
+    assert.equal(await page.locator('#shell-recovery-button').isDisabled(), true);
+    await settle(page, 'cancel');
+    assert.equal(await page.locator('#shell-recovery-button').isEnabled(), true);
+    assert.equal(await page.locator('#shell-recovery-button').textContent(), 'Windows 작업 복구');
+    await escape(page);
+    await settle(page, 'cancel');
+    assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
+    assert.equal(await count(page, 'drag'), 1);
+    assert.equal(await count(page, 'cancel'), 2);
+  });
   await scenario('Helper exit/busy/cancel/error/rejection release the reservation and permit one manual retry', async page => {
     let attempts = 0;
-    for (const code of ['SHELL_HELPER_EXITED', 'SHELL_BUSY', 'SHELL_TIMEOUT', 'SHELL_NATIVE_ERROR', 'SHELL_RECOVERY_FAILED', 'SHELL_CANCELLED']) {
+    for (const code of ['SHELL_HELPER_EXITED', 'SHELL_BUSY', 'SHELL_TIMEOUT', 'SHELL_NATIVE_ERROR', 'SHELL_RECOVERY_FAILED', 'SHELL_DISCONNECTED', 'DISCONNECTED', 'SHELL_CANCELLED']) {
       for (const rejected of [false, true]) {
         await start(page); assert.equal(await count(page, 'drag'), ++attempts);
         await start(page); await dragend(page);
@@ -190,6 +276,11 @@ async function scenario(name, run, native = true) {
     await start(page);
     assert.match(await drop(page), /이동/);
     assert.equal(await count(page, 'transfer'), 1);
+    assert.equal(await page.locator('#shell-recovery-button').isVisible(), true);
+    assert.equal(await page.locator('#shell-recovery-button').isDisabled(), true);
+    assert.match(await page.locator('#clipboard-status').textContent(), /이동 중/);
+    await escape(page); await page.locator('#shell-recovery-button').dispatchEvent('click');
+    assert.equal(await count(page, 'cancel'), 0, 'Recovery must not cancel an active internal file transfer');
     await dragend(page); await start(page);
     assert.equal(await count(page, 'drag'), 1);
     await settle(page, 'transfer', ok({ operation: 'move', completed: [], failed: [], skipped: [] }));

@@ -1,6 +1,6 @@
 {
   "name": "quadpane",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "description": "Quadpane — a multi-pane file explorer for Windows, inspired by Q-Dir.",
   "license": "MIT",

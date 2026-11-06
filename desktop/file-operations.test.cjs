@@ -160,6 +160,63 @@ test('a failed process exit cannot turn an uncertain mutation into a retryable E
   }
 });
 
+for (const stream of ['stdin', 'stdout', 'stderr']) test(`move helper ${stream} failure waits for exit and never retries an uncertain mutation`, async () => {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const child = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+  });
+  let calls = 0, settled = false;
+  const move = createNativeMover({ executable: 'private-fixture.exe', spawn() { calls++; return child; } });
+  const pending = move('C:\\fixture\\source', 'C:\\fixture\\target', 'directory');
+  pending.then(() => { settled = true; }, () => { settled = true; });
+  const rejected = assert.rejects(pending, { code: 'TRANSFER_FAILED', causeCode: 'ECONNRESET' });
+  child.emit('spawn');
+  // Even a complete-looking EXDEV response cannot authorize a retry after a
+  // broken transport. The process may still be changing the filesystem.
+  child.stdout.write('{"ok":false,"win32":17}');
+  let emittedError;
+  try { child[stream].emit('error', Object.assign(new Error('fixture pipe reset'), { code: 'ECONNRESET' })); }
+  catch (error) { emittedError = error; }
+  await new Promise(resolve => setImmediate(resolve));
+  const settledBeforeExit = settled;
+  child.emit('close', 0, null);
+  await rejected;
+  assert.equal(emittedError, undefined, 'pipe failures must not become uncaught exceptions');
+  assert.equal(settledBeforeExit, false, 'retain the mutation reservation until helper exit');
+  assert.equal(calls, 1, 'a stream error must not trigger compatibility fallback');
+});
+
+test('move helper process error after spawn retains shared reservation until close without replay', async () => {
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const { createMutationCoordinator } = require('./explorer-actions.cjs');
+  const child = Object.assign(new EventEmitter(), {
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+  });
+  let calls = 0, settled = false;
+  const move = createNativeMover({ executable: 'private-fixture.exe', spawn() { calls++; return child; } });
+  const mutations = createMutationCoordinator();
+  const pending = mutations.run(() => move('C:\\fixture\\source', 'C:\\fixture\\target', 'directory'));
+  pending.then(() => { settled = true; }, () => { settled = true; });
+  const rejected = assert.rejects(pending, { code: 'TRANSFER_FAILED', causeCode: 'ENOENT' });
+  await new Promise(resolve => setImmediate(resolve));
+  child.emit('spawn');
+  child.stdout.write('{"ok":false,"win32":17}');
+  child.emit('error', Object.assign(new Error('fixture error after launch'), { code: 'ENOENT' }));
+  await new Promise(resolve => setImmediate(resolve));
+  try {
+    assert.equal(settled, false, 'process error does not confirm that the mover has stopped');
+    assert.equal(mutations.pending, pending);
+    await assert.rejects(mutations.run(() => assert.fail('must not start a second mutation')), { code: 'ACTION_BUSY' });
+  } finally {
+    child.emit('close', 0, null);
+    await rejected;
+  }
+  assert.equal(calls, 1, 'neither compatibility fallback nor EXDEV replay is authorized');
+  assert.equal(mutations.pending, undefined);
+});
+
 function simulatedMover(replies) {
   const { EventEmitter } = require('node:events');
   const { PassThrough } = require('node:stream');
@@ -387,6 +444,37 @@ test('file and directory conflicts never overwrite or merge existing data', asyn
   assert.equal(result.skipped[0].code, 'EEXIST');
   assert.deepEqual(await fs.readdir(path.join(f.destination, 'same-folder')), ['destination.txt']);
   assert.deepEqual(await fs.readdir(path.join(f.source, 'same-folder')), ['source.txt']);
+});
+
+test('occupied destinations skip source tree enumeration and per-child metadata reads', async t => {
+  const f = await fixture();
+  const folder = path.join(f.source, 'occupied');
+  await fs.mkdir(folder);
+  await fs.mkdir(path.join(f.destination, 'occupied'));
+  await Promise.all(Array.from({ length: 128 }, (_, index) => fs.writeFile(path.join(folder, `${index}.txt`), 'source')));
+  const counts = { readdir: 0, childStats: 0 };
+  const module = { exports: {} };
+  require('node:vm').runInNewContext(await fs.readFile(path.join(__dirname, 'file-operations.cjs'), 'utf8'), {
+    module, process, __dirname,
+    require: name => name === 'node:fs/promises' ? {
+      ...fs,
+      readdir: async (...args) => { counts.readdir++; return fs.readdir(...args); },
+      lstat: async (filename, ...args) => {
+        if (filename.startsWith(folder + path.sep)) counts.childStats++;
+        return fs.lstat(filename, ...args);
+      },
+    } : require(name),
+  });
+  const service = module.exports.createTransferService({ nativeMove: () => assert.fail('conflicting transfer must not mutate') });
+  for (const operation of ['copy', 'move']) {
+    counts.readdir = counts.childStats = 0;
+    const result = await service.transfer({ sources: [folder], destination: f.destination, operation });
+    assert.equal(result.skipped[0]?.code, 'EEXIST', JSON.stringify(result));
+    t.diagnostic(`${operation} conflict: ${counts.readdir} enumerations, ${counts.childStats} child metadata reads`);
+    assert.deepEqual(counts, { readdir: 0, childStats: 0 });
+  }
+  assert.equal((await fs.readdir(folder)).length, 128);
+  assert.deepEqual(await fs.readdir(path.join(f.destination, 'occupied')), []);
 });
 
 test('self, descendant, junction source/child/destination are refused before mutation', async () => {

@@ -2,8 +2,8 @@
 
 여러 폴더를 한 화면에 나란히 열고, 패널 사이에서 파일을 복사·이동하는 Windows 멀티패널 파일 탐색기입니다. [Q-Dir](https://www.softwareok.com/?seite=Freeware/Q-Dir)의 멀티패널 개념을 현대적인 UI와 안전한 파일 작업으로 개선하는 것을 목표로 합니다.
 
-- 현재 버전: `0.9.3` (Windows x64 포터블 · 소스 기준 2026-11-04)
-- [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.9.3) · [v0.9.3 릴리스 노트](docs/releases/v0.9.3.md)
+- 현재 버전: `0.9.4` (Windows x64 포터블 · 소스 기준 2026-11-06)
+- [GitHub 릴리스](https://github.com/scytalezz/quadpane/releases/tag/v0.9.4) · [v0.9.4 릴리스 노트](docs/releases/v0.9.4.md)
 - 설치·관리자 권한·별도 Node.js 불필요 — 실행 파일 하나로 동작
 
 > **English** — *Quadpane* is a multi-pane file explorer for Windows, inspired by Q-Dir. It opens up to four folder panes side by side with copy/move between panes, favorites, two workspaces, drag & drop with Windows Explorer, and full session restore. Ships as a single portable x64 executable built on Electron. Built-in transfers skip conflicts and the Delete key uses the Recycle Bin. Windows shell commands follow Windows and extension behavior. Detailed docs below are in Korean.
@@ -29,13 +29,21 @@
 
 ## 포터블 실행
 
-기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.9.3-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 열린 폴더·작업 공간·즐겨찾기·테마와 표시 설정은 실행 파일 옆 `quadpane-data/`에 저장되며, 기존 설정 폴더를 그대로 재사용할 수 있습니다. EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
+기존 Quadpane를 완전히 종료한 뒤 `quadpane-0.9.4-portable-x64.exe`를 쓰기 가능한 폴더에 두고 실행합니다. 직접 빌드하면 `dist-portable/`에 생성됩니다. 열린 폴더·작업 공간·즐겨찾기·테마와 표시 설정은 실행 파일 옆 `quadpane-data/`에 저장되며, 기존 설정 폴더를 그대로 재사용할 수 있습니다. EXE와 함께 옮기면 설정이 유지됩니다. 자세한 사용법과 저장 구조는 [PORTABLE.md](PORTABLE.md)를 참고합니다.
 
 ## 앱 내 업데이트 (v0.9.1부터)
 
 왼쪽 아래에 현재 버전을 표시합니다. 포터블 실행 후 최신 정식 GitHub 릴리스를 백그라운드에서 한 번 확인하며, 버전 버튼으로 다시 확인할 수 있습니다. 새 버전이 있으면 **다운로드 → 업데이트하고 다시 시작** 순서로 진행합니다. 파일 작업 중에는 재시작하지 않으며 작업 공간과 표시 설정을 저장합니다.
 
 새 EXE는 기존 EXE 옆에 저장하고 `quadpane-data`를 그대로 사용합니다. 다운로드한 파일의 SHA-256을 검증하며 기존 EXE는 보관합니다. 인터넷은 업데이트 확인·다운로드에만 필요합니다. 연결되지 않아도 파일 탐색은 계속 사용할 수 있습니다. v0.9.1 사용자는 버전 버튼에서 업데이트를 확인하거나, 앱 종료 후 새 EXE를 기존 `quadpane-data` 옆에 두면 됩니다. 앱 내 업데이트가 없는 v0.9.0 이하에서는 직접 내려받아 주세요.
+
+## v0.9.4 주요 변경
+
+- 드래그 도우미의 정상 응답 종료와 통신 오류를 구분하고, 복구 성공 뒤 같은 요청의 늦은 오류가 복구 대기를 다시 켜지 않도록 합니다. 복구 중이거나 복구가 필요한 상태에서는 드롭을 차단합니다.
+- 이전 네이티브 드래그와 다른 경로의 외부 파일을 내부 이동으로 처리하지 않습니다. 외부 파일 드롭은 복사로 응답해 비동기 처리 전에 원본이 삭제되는 일을 막습니다. 결과가 불확실한 파일 작업은 자동 재실행하지 않습니다.
+- 정렬 결과·한국어 비교기를 재사용하고 검색·선택 갱신의 중복 작업을 줄입니다. 새로고침 대기 중 바꾼 선택을 보존하며, 파일명 충돌 확인과 설정 임시 파일 저장도 개선합니다.
+
+상세 변경과 검증 범위는 [v0.9.4 릴리스 노트](docs/releases/v0.9.4.md)를 참고하세요. 실제 Windows 탐색기의 물리적 드래그에서 보고된 간헐적 실패가 모두 해결됐는지는 아직 확인하지 못했습니다.
 
 ## v0.9.3 주요 변경
 
@@ -132,6 +140,10 @@ npm run desktop
 
 ## 검증
 
+v0.9.4 로컬 검사에서 구문 검사 **53개 파일**, 전체 Node 테스트 **409개 통과·2개 건너뜀**을 확인했습니다. 포터블 EXE 빌드와 **3회 실행**에서 버전 표시·한글 경로·설정 유지·정상 종료·임시 런타임 정리도 통과했습니다. 동일한 수정 소스의 앞선 검증으로 헤드리스 전송 경합 **37개**·드래그 복구 **13개**, 숨김 Electron 통합 **8개** 검사 묶음이 통과했습니다. 실제 Explorer의 간헐적 물리 드래그 실패 해결 여부는 미확인입니다. [외부 파일 드래그 및 복구 점검](docs/incoming-drag-review.md), [소스 검토 및 최적화](docs/optimization-review.md)에 조건과 한계를 기록합니다.
+
+아래는 이전 버전의 검증 기록입니다.
+
 v0.9.3 로컬 검사에서 문법 검사 52개 파일, 단위 테스트 389개 통과·선택적 환경 조건 2개 건너뜀(다른 볼륨 이동 검사 활성화)을 확인했습니다. 로컬 포터블 EXE 빌드와 소스·버전 일치 확인도 완료했습니다. v0.9.3 런처 3회 실행에서 정상 종료·설정 복원·임시 런타임 정리와 버전 표시를 확인했습니다. 실행 기록은 `.checks/release-093-launcher.log`에 있습니다. 앞선 헤드리스 드래그 12개·전송 경합 24개, 패키징 검사 7개 그룹과 `0.9.2-dragfix` 프리뷰 실행 3회는 별도 검증 기록입니다. 보고된 Explorer·브라우저의 물리적 드래그 장애는 재현하지 못했습니다.
 
 아래는 이전 버전의 검증 기록입니다.
@@ -177,6 +189,7 @@ node scripts/verification/verify-launcher.cjs 'Playwright가 들어 있는 node_
 | [Windows 셸 통합](docs/windows-shell.md) | 클래식 메뉴·드래그·클립보드 동작과 검증 범위 |
 | [셸 메뉴·드래그 복구](docs/shell-recovery.md) | v0.8.0 캡처 잔류 현상과 v0.8.1 수정·검증 기록 |
 | [표시·선택·이동 개선](docs/display-selection.md) | v0.8.0 표시 설정·드래그 선택·이동 안정성 개선과 프리뷰 검증 이력 |
+| [v0.9.4 릴리스 노트](docs/releases/v0.9.4.md) | 외부 드롭·복구 경합 개선과 정렬·검색·선택 최적화 |
 | [v0.9.3 릴리스 노트](docs/releases/v0.9.3.md) | 외부 드래그 응답 대기·취소 감시와 화면 복구 버튼 개선 |
 | [v0.9.2 릴리스 노트](docs/releases/v0.9.2.md) | 외부 복사·붙여넣기·드래그 안정화와 시작 성능 개선 |
 | [외부 파일 작업·시작 성능 개선](docs/transfer-performance.md) | v0.9.2 수정 원인, 출시 전 프리뷰 측정과 검증 범위 |

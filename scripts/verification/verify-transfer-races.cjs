@@ -49,12 +49,17 @@ async function fixture({ layout = 4, active = 0, entries = 2, holdLists = false,
     const record = (type, value) => f.calls.push({ type, value, time: performance.now() });
     const defer = (type, value) => {
       record(type, value);
-      return new Promise(resolve => (f.pending[type] ||= []).push({ resolve, value }));
+      return new Promise((resolve, reject) => (f.pending[type] ||= []).push({ resolve, reject, value }));
     };
     f.settle = (type, value, index = 0) => {
       const [request] = (f.pending[type] || []).splice(index, 1);
       if (!request) throw new Error(`No pending ${type}`);
       request.resolve(value);
+    };
+    f.reject = (type, code) => {
+      const request = (f.pending[type] || []).shift();
+      if (!request) throw new Error(`No pending ${type}`);
+      request.reject(Object.assign(new Error(`Fixture ${code}`), { code }));
     };
     f.directory = location => ok({ path: location, name: location, parent: 'C:\\Fixture', breadcrumbs: [], entries: Array.from({ length: entries }, (_, index) => {
       const name = index === 0 ? 'alpha.txt' : index === 1 ? 'beta.txt' : `file-${index}.txt`;
@@ -76,7 +81,9 @@ async function fixture({ layout = 4, active = 0, entries = 2, holdLists = false,
       completeShellPaste: value => { record('complete', value); return Promise.resolve(ok(null)); },
       transfer: value => defer('transfer', value),
       beginNativeDrag: value => defer('drag', value),
-      droppedPaths: files => { record('paths', files.map(file => file.name)); return f.pathless ? [] : files.map(file => `C:\\External\\${file.name}`); },
+      cancelShell: () => defer('cancel'),
+      shellMenu: value => defer('menu', value),
+      droppedPaths: files => { record('paths', files.map(file => file.name)); return f.pathless ? [] : f.dropPaths || files.map(file => `C:\\External\\${file.name}`); },
       updateState: async () => ok(update),
       installUpdate: async () => { record('install'); return ok({ restarting: true }); },
     };
@@ -119,14 +126,155 @@ async function externalDrop(page, { protectedMode = false, urlOnly = false } = {
     else data.items.add(new File(['fixture'], 'external.txt'));
     if (protectedMode) Object.defineProperty(data, 'files', { value: [] });
     const event = new DragEvent(protectedMode || urlOnly ? 'dragover' : 'drop', { bubbles: true, cancelable: true, dataTransfer: data });
-    let effect;
-    document.addEventListener(event.type, () => { effect = data.dropEffect; }, { once: true });
     target.dispatchEvent(event);
-    return { prevented: event.defaultPrevented, effect, feedback: document.querySelector('#drag-feedback').textContent, types: [...data.types], busy: target.closest('.file-panel').getAttribute('aria-busy'), rows: target.querySelectorAll('[data-file]').length };
+    // Accepted drops stop propagation at #panels; inspect the dispatched
+    // DataTransfer directly instead of a document listener that never runs.
+    return { prevented: event.defaultPrevented, effect: data.dropEffect, feedback: document.querySelector('#drag-feedback').textContent, types: [...data.types], busy: target.closest('.file-panel').getAttribute('aria-busy'), rows: target.querySelectorAll('[data-file]').length };
   }, { protectedMode, urlOnly });
 }
+async function startDrag(page) {
+  await select(page);
+  await page.locator('#panel-design-0 tr[data-file]').first().dispatchEvent('dragstart', { dataTransfer: await page.evaluateHandle(() => new DataTransfer()) });
+  await tick(page);
+}
+const shellFailure = code => ({ ok: false, error: { code, message: `Fixture ${code}` } });
 (async () => {
   browser = await chromium.launch({ channel: 'msedge', headless: true });
+  await scenario('recovery gate rejects incoming drops until explicit recovery succeeds', async page => {
+    await startDrag(page); await settle(page, 'drag', shellFailure('SHELL_DISCONNECTED')); await tick(page);
+    const button = page.locator('#shell-recovery-button');
+    assert.equal(await button.isEnabled(), true);
+    assert.equal((await externalDrop(page, { protectedMode: true })).effect, 'none');
+    await externalDrop(page); await tick(page);
+    assert.equal((await calls(page, 'transfer')).length, 0);
+    await button.click(); await externalDrop(page); await tick(page);
+    assert.equal((await calls(page, 'transfer')).length, 0);
+    await settle(page, 'cancel', ok(null)); await tick(page);
+    assert.equal(await button.isHidden(), true);
+    assert.equal((await calls(page, 'transfer')).length, 0, 'Recovery never replays a rejected drop');
+    await externalDrop(page); await tick(page);
+    assert.equal((await calls(page, 'transfer')).length, 1);
+    await finishTransfer(page);
+  });
+  await scenario('recovery gate rejects drops while cancellation owns the native handoff', async page => {
+    await startDrag(page); await page.locator('#shell-recovery-button').click();
+    await externalDrop(page); await tick(page);
+    assert.equal((await calls(page, 'transfer')).length, 0);
+    await settle(page, 'cancel', ok(null)); await tick(page);
+    assert.equal(await page.locator('#activity-strip').getAttribute('aria-busy'), 'true', 'Acknowledgement cannot release the original drag');
+    await settle(page, 'drag', shellFailure('SHELL_CANCELLED')); await tick(page);
+    assert.equal(await page.locator('#activity-strip').getAttribute('aria-busy'), 'false');
+  });
+  await scenario('recovery menu success clears only the error captured before the retry', async page => {
+    await startDrag(page); await settle(page, 'drag', shellFailure('SHELL_DISCONNECTED')); await tick(page);
+    await page.locator('#panel-design-1 .file-scroll').dispatchEvent('contextmenu');
+    await settle(page, 'menu', ok({ action: 'cancel' })); await tick(page); await idle(page);
+    assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
+    assert.equal((await calls(page, 'cancel')).length, 0);
+  });
+  for (const mode of ['drag', 'menu']) for (const ackFirst of [true, false]) {
+    await scenario(`recovery ${mode} acknowledgement ${ackFirst ? 'before' : 'after'} original error retires only its own recovery latch`, async page => {
+      if (mode === 'drag') await startDrag(page);
+      else await page.locator('#panel-design-1 .file-scroll').dispatchEvent('contextmenu');
+      await page.locator('#shell-recovery-button').click();
+      const originalError = async () => {
+        await page.evaluate(mode => window.fixture.reject(mode, 'SHELL_DISCONNECTED'), mode); await tick(page);
+      };
+      if (!ackFirst) await originalError();
+      await settle(page, 'cancel', ok(null)); await tick(page);
+      if (ackFirst) {
+        assert.equal(await page.locator('#activity-strip').getAttribute('aria-busy'), 'true', 'Helper exit acknowledgement cannot release original IPC ownership');
+        await originalError();
+      }
+      assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
+      assert.equal(await page.locator('#activity-strip').getAttribute('aria-busy'), 'false');
+      assert.match(await page.locator('#toast').textContent(), /SHELL_DISCONNECTED/, 'Uncertain outcome is still reported');
+      assert.equal((await calls(page, mode)).length, 1);
+      assert.equal((await calls(page, 'cancel')).length, 1);
+      assert.equal((await calls(page, 'transfer')).length, 0);
+    });
+  }
+  await scenario('recovery acknowledged old drag cannot erase a later cancel failure or a new drag error', async page => {
+    await startDrag(page); await page.locator('#shell-recovery-button').click();
+    await settle(page, 'cancel', ok(null)); await tick(page);
+    await page.locator('#shell-recovery-button').click();
+    await settle(page, 'cancel', shellFailure('SHELL_RECOVERY_FAILED')); await tick(page);
+    await settle(page, 'drag', shellFailure('SHELL_DISCONNECTED')); await tick(page);
+    assert.equal(await page.locator('#shell-recovery-button').isEnabled(), true, 'Old recovered request must not clear failed cleanup');
+    await page.locator('#shell-recovery-button').click(); await settle(page, 'cancel', ok(null)); await tick(page);
+    assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
+    await startDrag(page); await settle(page, 'drag', shellFailure('SHELL_DISCONNECTED')); await tick(page);
+    assert.equal(await page.locator('#shell-recovery-button').isEnabled(), true, 'An acknowledgement never covers a new native request');
+    assert.equal((await calls(page, 'drag')).length, 2);
+    assert.equal((await calls(page, 'transfer')).length, 0);
+  });
+  await scenario('native handoff cannot turn unrelated external sources into a move', async page => {
+    await startDrag(page);
+    assert.equal((await externalDrop(page, { protectedMode: true })).effect, 'copy');
+    assert.equal((await externalDrop(page)).effect, 'copy'); await tick(page);
+    assert.equal((await calls(page, 'transfer'))[0].value.operation, 'copy');
+    await settle(page, 'drag', ok({ action: 'cancel' })); await finishTransfer(page);
+  });
+  await scenario('native handoff matching sources still move and transfer failure does not cancel or replay', async page => {
+    await startDrag(page);
+    await page.evaluate(() => { window.fixture.dropPaths = ['C:\\Fixture\\design-0\\alpha.txt']; });
+    await page.evaluate(() => document.dispatchEvent(new Event('dragend')));
+    assert.equal((await externalDrop(page, { protectedMode: true })).effect, 'copy', 'Protected payload has no verified source paths');
+    assert.equal((await externalDrop(page)).effect, 'copy', 'Same paths after stale dragend do not prove OLE source identity or authorize external deletion'); await tick(page);
+    assert.equal((await calls(page, 'transfer'))[0].value.operation, 'move');
+    await page.locator('#shell-recovery-button').dispatchEvent('click'); await key(page, 'Escape');
+    assert.equal((await calls(page, 'cancel')).length, 0, 'Shell recovery cannot abort an in-flight transfer');
+    await settle(page, 'drag', shellFailure('SHELL_DISCONNECTED')); await tick(page);
+    assert.equal(await page.locator('#shell-recovery-button').isDisabled(), true);
+    await page.evaluate(() => window.fixture.reject('transfer', 'TRANSFER_FAILED')); await tick(page);
+    assert.equal(await page.locator('#shell-recovery-button').isEnabled(), true);
+    await page.locator('#shell-recovery-button').click();
+    await page.evaluate(() => window.fixture.reject('cancel', 'SHELL_RECOVERY_FAILED')); await tick(page);
+    assert.equal(await page.locator('#shell-recovery-button').isEnabled(), true);
+    await page.locator('#shell-recovery-button').click(); await settle(page, 'cancel', ok(null)); await tick(page);
+    assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
+    assert.equal((await calls(page, 'transfer')).length, 1);
+    assert.equal((await calls(page, 'drag')).length, 1);
+  });
+  await scenario('recovery successful menu retry cannot erase a later cancellation failure', async page => {
+    await startDrag(page); await settle(page, 'drag', shellFailure('SHELL_DISCONNECTED')); await tick(page);
+    await page.locator('#panel-design-1 .file-scroll').dispatchEvent('contextmenu');
+    await page.locator('#shell-recovery-button').click();
+    await settle(page, 'cancel', shellFailure('SHELL_RECOVERY_FAILED')); await tick(page);
+    await settle(page, 'menu', ok({ action: 'cancel' })); await tick(page); await idle(page);
+    assert.equal(await page.locator('#shell-recovery-button').isEnabled(), true);
+    await page.locator('#shell-recovery-button').click(); await settle(page, 'cancel', ok(null)); await tick(page);
+    assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
+    assert.equal((await calls(page, 'menu')).length, 1);
+  });
+  await scenario('incoming external drop never starts outbound drag on focus or stale dragend', async page => {
+    await externalDrop(page); await tick(page);
+    await page.evaluate(() => { window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('dragend')); });
+    await finishTransfer(page);
+    await page.evaluate(() => { window.dispatchEvent(new Event('focus')); document.dispatchEvent(new Event('dragend')); });
+    await tick(page);
+    assert.equal((await calls(page, 'drag')).length, 0);
+    assert.equal((await calls(page, 'cancel')).length, 0);
+    assert.equal((await calls(page, 'transfer')).length, 1);
+  });
+  await scenario('settled transfer releases mutation reservation while directory refresh is deferred', async page => {
+    await externalDrop(page); await tick(page);
+    await page.evaluate(() => { window.fixture.holdLists = true; });
+    await settle(page, 'transfer', ok({ operation: 'copy', completed: [{ source: 'C:\\External\\external.txt', destination: 'C:\\Fixture\\design-1\\external.txt' }], skipped: [], failed: [] })); await tick(page);
+    assert.equal(await page.locator('#operation-results-button').isVisible(), true);
+    assert.equal(await page.locator('#activity-strip').getAttribute('aria-busy'), 'false');
+    assert.equal(await page.locator('#panel-design-1').getAttribute('aria-busy'), 'true');
+    assert.equal(await page.locator('#update-install').isDisabled(), true, 'Pending directory read still blocks install');
+    await externalDrop(page); await tick(page);
+    assert.equal((await calls(page, 'transfer')).length, 2);
+    await page.evaluate(() => {
+      const f = window.fixture; f.holdLists = false;
+      while (f.pending.listWait?.length) f.settle('listWait', f.directory(f.pending.listWait[0].value));
+    });
+    await idle(page); await tick(page);
+    assert.equal(await page.locator('#activity-strip').getAttribute('aria-busy'), 'true', 'Old refresh cannot release the next transfer');
+    await finishTransfer(page);
+  });
   for (const layout of [1, 2, 4]) await scenario(`startup loads only ${layout} visible panes`, async page => {
     const lists = await calls(page, 'list');
     metrics.push({ layout, directoryRequests: lists.length, hiddenRows: await page.locator('.file-panel[hidden] tr[data-file]').count(), renderMilliseconds: await page.evaluate(() => window.fixture.renderMilliseconds) });

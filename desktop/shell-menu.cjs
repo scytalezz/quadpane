@@ -32,7 +32,7 @@ async function validateMenuRequest(request, options = {}) {
 
 const defaultTimeouts = Object.freeze({
   validationMs: 30000, workerMs: 30000, clipboardMs: 15000,
-  shutdownMs: 3000,
+  shutdownMs: 3000, eofExitMs: 100,
 });
 
 function createShellMenuService(executable, options = {}) {
@@ -76,9 +76,15 @@ function createShellMenuService(executable, options = {}) {
     // Target only the ChildProcess created here, never Explorer or a PID lookup.
     try { return worker.kill('SIGKILL') !== false; } catch { return false; }
   }
+  function clearEofDeadline(owned) {
+    if (!owned?.eof) return;
+    timers.clearTimeout(owned.eof.timer);
+    owned.eof = undefined;
+  }
   function stop(worker, graceful = false) {
     const owned = workers.get(worker);
     if (!owned) return Promise.resolve({ exited: true });
+    clearEofDeadline(owned);
     // A lost response channel during commit is not proof the move stopped.
     // Retain ownership without sending EOF (which starts the native watchdog).
     if (owned.unconfirmedCommit) return Promise.resolve({ exited: false });
@@ -130,7 +136,7 @@ function createShellMenuService(executable, options = {}) {
     child = undefined;
     rejectAll(failure('SHELL_CANCELLED', 'Windows shell operation cancelled'));
     // An exit callback cannot wait for timers or EOF handling on a blocked STA.
-    for (const worker of workers.keys()) kill(worker);
+    for (const [worker, owned] of workers) { clearEofDeadline(owned); kill(worker); }
   }
   function retire(worker, error) {
     if (child !== worker) return;
@@ -144,6 +150,22 @@ function createShellMenuService(executable, options = {}) {
     if (pending?.worker === worker) rejectAll(error);
     workers.get(worker)?.lines.close();
     stop(worker);
+  }
+  function responseEnded(worker) {
+    if (child !== worker) return;
+    const owned = workers.get(worker);
+    if (owned.eof) return;
+    if (pending?.worker !== worker) return disconnected(worker);
+    // Clean EOF may arrive before exit(2), the native uncommitted-drag watchdog.
+    // Give exit a bounded chance to classify the result; EOF alone proves neither
+    // cancellation nor completion. Protect a commit even during this short wait.
+    if (pending.phase === 'committing') owned.unconfirmedCommit = true;
+    clearDeadline(pending);
+    const eof = owned.eof = {};
+    eof.timer = timers.setTimeout(() => {
+      if (child !== worker || owned.eof !== eof) return;
+      disconnected(worker);
+    }, timeouts.eofExitMs);
   }
   function disconnected(worker, error) {
     // readline forwards stdout errors before the stream's own error/close
@@ -250,15 +272,18 @@ function createShellMenuService(executable, options = {}) {
     worker.stderr.resume();
     worker.stdin.on('error', error => disconnected(worker, error));
     worker.stdout.on('error', error => disconnected(worker, error));
-    // Stream closure does not guarantee a ChildProcess exit/close notification.
-    // Interactive requests have no deadline, so losing their response channel
-    // must settle them explicitly without releasing process ownership early.
-    worker.stdout.once('end', () => disconnected(worker));
-    worker.stdout.once('close', () => disconnected(worker));
+    // Only clean EOF gets an exit-classification grace. Errors and abrupt close
+    // still retire immediately; end followed by close must not restart the grace.
+    worker.stdout.once('end', () => responseEnded(worker));
+    worker.stdout.once('close', () => {
+      if (worker.stdout.readableEnded) responseEnded(worker);
+      else disconnected(worker);
+    });
     worker.stderr.on('error', error => disconnected(worker, error));
     worker.on('error', error => retire(worker, error));
     function exited(exitCode, signal) {
       if (!workers.has(worker)) return;
+      clearEofDeadline(workers.get(worker));
       lines.close();
       workers.delete(worker);
       if (!workers.size) lifecycle.removeListener('exit', onProcessExit);

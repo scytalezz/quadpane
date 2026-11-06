@@ -138,6 +138,7 @@ let dropTarget = null;
 let shellMenuPending = false;
 let shellCancelPending = null;
 let shellRecoveryNeeded = null;
+let shellRecoveryOwner = null;
 let marquee = null;
 let marqueeGuard = false;
 let toastTimer;
@@ -145,8 +146,12 @@ const workspace = () => workspaces[workspaceId];
 const activePane = () => workspace()?.panes[workspace().active];
 const allPanes = () => Object.values(workspaces).flatMap((item) => item.panes);
 const visiblePanes = () => workspace().layout === 1 ? [activePane()] : workspace().panes.slice(0,workspace().layout);
-const selectedFiles = (pane = activePane()) => pane?.entries.filter((file) => pane.selected.has(file.id) && isFileVisible(file)) || [];
-const selectedFile = () => selectedFiles().length === 1 ? selectedFiles()[0] : null;
+const selectedFiles = (pane = activePane()) => {
+  if (!pane?.selected.size) return [];
+  const query = searchQuery();
+  return pane.entries.filter((file) => pane.selected.has(file.id) && isFileVisible(file,query));
+};
+const selectedFile = () => {const files = selectedFiles();return files.length === 1 ? files[0] : null;};
 const pathKey = (value) => String(value || '').replace(/\//g,'\\').replace(/\\+$/,'').toLocaleLowerCase('en-US');
 const samePath = (left,right) => pathKey(left) === pathKey(right);
 // A focus refresh keeps its committed destination usable; a new navigation does not.
@@ -592,7 +597,9 @@ async function transferFiles(sources,destination,operation,fromClipboard) {
   }
   if (operation==='move') result.completed.forEach((item) => remapReferences(item.source,item.destination));
   const affectedPath = (path) => samePath(path,destination) || sources.some((source) => samePath(path,parentPath(source)) || (operation==='move' && pathWithin(path,source)));
-  await refreshAffected(affectedPath,operation==='move'?result.completed:[]);
+  // The transfer and clipboard bookkeeping have settled. Directory reads own
+  // their pane reservations; they must not keep the global mutation lock alive.
+  refreshAffected(affectedPath,operation==='move'?result.completed:[]).catch(() => showToast('파일 작업은 끝났지만 폴더 목록을 갱신하지 못했어요. 새로고침해 주세요.'));
 }
 async function syncShellClipboard() {
   if (shellClipboardBlocked()) return false;
@@ -674,17 +681,20 @@ async function openContextMenu(pane,row,x,y,extended = false) {
   const files = selectedFiles(pane);
   if (typeof bridge.shellMenu==='function') {
     if (!pane.loaded || pane.loading || pane.error || transferPending) return;
+    const recovery = shellRecoveryNeeded;
     transferPending = true;
     clipboardReadToken++;
-    shellMenuPending = true;
+    const menu = {};
+    shellMenuPending = menu;
     updateSelection();
     try {
       const result = await bridge.shellMenu({parent:pane.path,paths:files.map((file) => file.path),x,y,extended});
       if (!result?.ok) {
-        rememberShellRecovery(result?.error);
+        rememberShellRecovery(result?.error,menu);
         if (result?.error?.code==='SHELL_CANCELLED') return;
         throw new Error(result?.error?.message || 'Windows 메뉴를 열지 못했어요.');
       }
+      if (shellRecoveryNeeded===recovery) {shellRecoveryNeeded = null;shellRecoveryOwner = null;}
       // Rename requires an IShellView host. Use our existing dialog and path remapping.
       if (result.value?.action==='rename' && files.length===1) {
         transferPending = false;
@@ -694,7 +704,7 @@ async function openContextMenu(pane,row,x,y,extended = false) {
         return;
       }
       await refreshAffected(() => true);
-    } catch (error) {rememberShellRecovery(error);showToast(error.message || 'Windows 메뉴를 열지 못했어요.');}
+    } catch (error) {rememberShellRecovery(error,menu);showToast(error.message || 'Windows 메뉴를 열지 못했어요.');}
     finally {shellMenuPending = false;transferPending = false;updateSelection();}
     try {await syncShellClipboard();} catch { /* clipboard can be temporarily busy */ }
     return;
@@ -826,9 +836,12 @@ function windowsRoot(value) {
   return unc ? unc[0].toLowerCase() : '';
 }
 function dropOperation(sources,destination,event) {
-  // Chromium acknowledges a drop before our asynchronous transfer completes.
-  // Only our own source (which never deletes on OLE MOVE) can safely offer MOVE.
+  // This selects the backend operation, not the OLE acknowledgement effect.
   if (!internalDrag) return 'copy';
+  // A native response may lag behind a different app's incoming drop. Require
+  // matching sources for the pending selection's move policy; this does not
+  // authenticate the OLE source, so Files drops still acknowledge only COPY.
+  if (internalDrag.native && (!sources.length || sources.length!==internalDrag.sources.length || !sources.every((source) => internalDrag.sources.some((ownSource) => samePath(source,ownSource))))) return 'copy';
   if (event.ctrlKey) return 'copy';
   if (event.shiftKey) return 'move';
   const root = windowsRoot(destination);
@@ -858,12 +871,12 @@ async function startNativeDrag(sources,pane) {
   try {
     const result = await bridge.beginNativeDrag(sources);
     if (nativeDragPending!==drag) return;
-    if (!result?.ok) rememberShellRecovery(result?.error);
-    else if (shellRecoveryNeeded===recovery) shellRecoveryNeeded = null;
+    if (!result?.ok) rememberShellRecovery(result?.error,drag);
+    else if (shellRecoveryNeeded===recovery) {shellRecoveryNeeded = null;shellRecoveryOwner = null;}
     if (!result?.ok && result?.error?.code!=='SHELL_CANCELLED') showToast(result?.error?.message || '파일을 창 밖으로 끌지 못했어요.');
     else if (result?.value?.sourceRetained) showToast('대상 앱이 원본 삭제를 요청했지만 원본을 보존했어요. 대상에서 복사 결과를 확인해 주세요.');
   } catch (error) {
-    if (nativeDragPending===drag) rememberShellRecovery(error);
+    if (nativeDragPending===drag) rememberShellRecovery(error,drag);
     if (nativeDragPending===drag && error?.code!=='SHELL_CANCELLED') showToast(error.message || '파일을 창 밖으로 끌지 못했어요.');
   } finally {
     if (nativeDragPending===drag) {
@@ -877,13 +890,20 @@ async function startNativeDrag(sources,pane) {
 function shellClipboardBlocked() {
   return Boolean(nativeDragPending || shellMenuPending || shellCancelPending || shellRecoveryNeeded);
 }
-function rememberShellRecovery(error) {
-  if (['SHELL_BUSY','SHELL_RECOVERY_FAILED','SHELL_DISCONNECTED','DISCONNECTED'].includes(error?.code)) shellRecoveryNeeded = error;
+function rememberShellRecovery(error,owner) {
+  // A successful cancel acknowledgement confirms helper exit, but the covered
+  // request's IPC error can arrive later. Still report its uncertain outcome;
+  // only the recovery latch is redundant. Other requests/errors remain live.
+  if (owner?.recoveryAcknowledged) return;
+  if (['SHELL_BUSY','SHELL_RECOVERY_FAILED','SHELL_DISCONNECTED','DISCONNECTED'].includes(error?.code)) {
+    shellRecoveryNeeded = error;
+    shellRecoveryOwner = owner;
+  }
 }
 async function cancelShellInteraction() {
   if (shellCancelPending || (transferPending && !shellMenuPending) || !(nativeDragPending || shellMenuPending || shellRecoveryNeeded) || typeof bridge.cancelShell!=='function') return;
-  // A newer failure from the original request still needs explicit recovery.
   const recovery = shellRecoveryNeeded;
+  const owner = nativeDragPending || shellMenuPending;
   const cancellation = {};
   shellCancelPending = cancellation;
   updateSelection();
@@ -891,9 +911,13 @@ async function cancelShellInteraction() {
     const result = await bridge.cancelShell();
     if (!result?.ok) {
       shellRecoveryNeeded = result?.error || {};
+      shellRecoveryOwner = cancellation;
       showToast(result?.error?.message || 'Windows 작업을 취소하지 못했어요.');
-    } else if (shellRecoveryNeeded===recovery) shellRecoveryNeeded = null;
-  } catch (error) {shellRecoveryNeeded = error;showToast(error.message || 'Windows 작업을 취소하지 못했어요.');}
+    } else {
+      if (owner) owner.recoveryAcknowledged = true;
+      if (shellRecoveryNeeded===recovery || (owner && shellRecoveryOwner===owner)) {shellRecoveryNeeded = null;shellRecoveryOwner = null;}
+    }
+  } catch (error) {shellRecoveryNeeded = error;shellRecoveryOwner = cancellation;showToast(error.message || 'Windows 작업을 취소하지 못했어요.');}
   finally {
     // Only the original drag/menu response releases its reservation. A cancel
     // acknowledgement can arrive first, or fail while that operation is live.
@@ -1018,7 +1042,7 @@ function finishMarquee(cancel = false) {
 function getDropTarget(event) {
   const scroll = event.target.closest?.('.file-scroll');
   const pane = scroll && paneFromElement(scroll);
-  if (!paneCanReceiveFiles(pane) || transferPending || typeof bridge.transfer!=='function') return null;
+  if (!paneCanReceiveFiles(pane) || transferPending || shellCancelPending || shellRecoveryNeeded || typeof bridge.transfer!=='function') return null;
   const row = event.target.closest('[data-file]');
   const file = row && pane.entries.find((item) => item.id===row.dataset.file);
   return {pane,path:file?.type==='folder'?file.path:pane.path,name:file?.type==='folder'?file.name:pane.name,element:file?.type==='folder'?row:scroll};
@@ -1033,17 +1057,22 @@ function showDropFeedback(target,event) {
     target.element.classList.add('drop-target');
   }
   dropTarget = target;
-  const effect = internalDrag ? dropOperation(internalDrag.sources,target.path,event) : dropOperation([],target.path,event);
+  // Protected native dragover does not expose paths. Advertise copy until the
+  // drop supplies sources that can be compared with our native selection.
+  const knownSelection = internalDrag && !internalDrag.native;
+  const effect = dropOperation(knownSelection?internalDrag.sources:[],target.path,event);
   const feedback = $('#drag-feedback');
-  const text = effect ? `${target.name}에 ${effect==='move'?'이동':'복사'}${internalDrag?` · ${internalDrag.sources.length}개`:''}` : `${target.name}에 놓기 · Ctrl 복사 / Shift 이동`;
+  const text = effect ? `${target.name}에 ${effect==='move'?'이동':'복사'}${knownSelection?` · ${internalDrag.sources.length}개`:''}` : `${target.name}에 놓기 · Ctrl 복사 / Shift 이동`;
   if (feedback.textContent!==text) feedback.textContent=text;
   if (!feedback.matches(':popover-open')) feedback.showPopover();
   positionOverlay(feedback,event.clientX+16,event.clientY+18);
   return effect || 'copy';
 }
-function isFileVisible(file) {
-  const query = $('#global-search').value.trim().toLocaleLowerCase('ko');
-  return (displayPreferences.showHidden || !file.hidden) && file.name.toLocaleLowerCase('ko').includes(query);
+function searchQuery() {
+  return $('#global-search').value.trim().toLocaleLowerCase('ko');
+}
+function isFileVisible(file,query = searchQuery()) {
+  return (displayPreferences.showHidden || !file.hidden) && (!query || file.name.toLocaleLowerCase('ko').includes(query));
 }
 function displayFileName(file) {
   if (displayPreferences.showExtensions || file.type !== 'file' || file.name.startsWith('.')) return file.name;
@@ -1061,18 +1090,27 @@ function setDisplayPreference(key,value) {
   if (!ready || !Object.hasOwn(displayPreferences,key)) return;
   finishMarquee(true);
   displayPreferences[key] = Boolean(value);
-  allPanes().forEach(renderFiles);
+  renderFileLists(allPanes());
   persistPreferences();
 }
+const nameCollator = new Intl.Collator('ko',{numeric:true,sensitivity:'base'});
+const nameTieCollator = new Intl.Collator('ko',{numeric:true});
+const sortedFileCache = new WeakMap();
 function sortedFiles(pane) {
-  return pane.entries.filter(isFileVisible).sort((a,b) => {
+  const query = searchQuery();
+  const cached = sortedFileCache.get(pane);
+  // Directory responses replace entries; selection changes retain that snapshot.
+  if (cached && cached.entries===pane.entries && cached.query===query && cached.showHidden===displayPreferences.showHidden && cached.sort===pane.sort && cached.direction===pane.direction) return cached.rows;
+  const rows = pane.entries.filter((file) => isFileVisible(file,query)).sort((a,b) => {
     if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
     let compared;
     if (pane.sort === 'size') compared = (a.size ?? -1) - (b.size ?? -1);
     else if (pane.sort === 'modified') compared = (Date.parse(a.modified) || 0) - (Date.parse(b.modified) || 0);
-    else compared = a.name.localeCompare(b.name,'ko',{numeric:true,sensitivity:'base'});
-    return (compared || a.name.localeCompare(b.name,'ko',{numeric:true})) * pane.direction;
+    else compared = nameCollator.compare(a.name,b.name);
+    return (compared || nameTieCollator.compare(a.name,b.name)) * pane.direction;
   });
+  sortedFileCache.set(pane,{entries:pane.entries,query,showHidden:displayPreferences.showHidden,sort:pane.sort,direction:pane.direction,rows});
+  return rows;
 }
 function renderSidebar() {
   $('#workspaces').innerHTML = Object.entries(workspaceDefinitions).map(([id,item]) => `<button class="sidebar-button ${id===workspaceId?'selected':''}" data-workspace="${id}" aria-current="${id===workspaceId?'page':'false'}" title="${item.name}" ${ready?'':'disabled'}>${icon(item.icon)}<span>${item.name}</span>${id===workspaceId?'<i class="workspace-dot" aria-hidden="true"></i>':''}</button>`).join('');
@@ -1120,10 +1158,14 @@ function renderPanel(pane) {
   if (pane.loading && pane.loaded) updateSelection();
   else renderFiles(pane);
 }
-function renderFiles(pane) {
+function renderFileLists(panes) {
+  panes.forEach((pane) => renderFiles(pane,false));
+  updateSelection();
+}
+function renderFiles(pane,refreshSelection = true) {
   if (marquee?.pane === pane) finishMarquee(true);
   const panel = panelElement(pane);
-  if (panel.hidden) {updateSelection();return;}
+  if (panel.hidden) {if (refreshSelection) updateSelection();return;}
   const rows = sortedFiles(pane);
   const visibleIds = new Set(rows.map((file) => file.id));
   pane.selected = new Set([...pane.selected].filter((id) => visibleIds.has(id)));
@@ -1140,7 +1182,7 @@ function renderFiles(pane) {
   const availableCount = pane.entries.filter((file) => displayPreferences.showHidden || !file.hidden).length;
   $('.panel-count',panel).textContent = pane.loaded ? (query ? `${rows.length} / ${availableCount}개 항목` : `${rows.length}개 항목`) : pane.loading ? '불러오는 중' : '폴더를 확인해 주세요';
   $('.panel-footer-right',panel).innerHTML = pane.loaded ? `${icon('folder')}<span>${rows.filter((file) => file.type==='folder').length}개 폴더${pane.skipped?` · ${pane.skipped}개 읽기 제외`:''}</span>` : '';
-  updateSelection();
+  if (refreshSelection) updateSelection();
 }
 function updateWorkspaceView() {
   finishMarquee(true);
@@ -1185,19 +1227,19 @@ function updateSelection() {
     for (const [action,enabled] of Object.entries(paneFileActions(pane))) {
       $(`[data-action="${action}"]`,panel).disabled = !enabled;
     }
-    const entriesById = new Map(pane.entries.map((file) => [file.id,file]));
+    const entriesById = cutPaths.size ? new Map(pane.entries.map((file) => [file.id,file])) : null;
     $$('[data-file]',panel).forEach((row) => {
       const selected = pane.selected.has(row.dataset.file);
       row.classList.toggle('selected',selected);
-      row.setAttribute('aria-selected',String(selected));
-      const file = entriesById.get(row.dataset.file);
-      row.classList.toggle('cut-pending',cutPaths.has(pathKey(file?.path)));
+      if (row.getAttribute('aria-selected')!==String(selected)) row.setAttribute('aria-selected',String(selected));
+      const file = entriesById?.get(row.dataset.file);
+      row.classList.toggle('cut-pending',Boolean(file && cutPaths.has(pathKey(file.path))));
     });
   });
   $('#refresh-button').disabled = !current.path;
   $('#refresh-button').setAttribute('aria-busy',String(current.loading));
-  $('#file-info-button').disabled = !selectedFile();
   const files = selectedFiles();
+  $('#file-info-button').disabled = files.length!==1;
   const canTransfer = typeof bridge.transfer === 'function' && !transferPending && !shellClipboardBlocked();
   $('#copy-button').disabled = !canTransfer || !files.length || !paneCanReceiveFiles(current);
   $('#cut-button').disabled = !canTransfer || !files.length || !paneCanReceiveFiles(current);
@@ -1256,8 +1298,6 @@ async function navigate(pane,requestedPath,options = {}) {
   const draftVersion = pane.draftVersion;
   const mayUpdateDraft = !options.preserveDraft || !pane.dirty;
   const previousPath = pane.error?.historyOrigin ?? pane.path;
-  const previousSelected = new Set(selectedFiles(pane).map((file) => pathKey(file.path)));
-  const previousAnchor = pane.entries.find((file) => file.id===pane.selectionAnchor)?.path;
   pane.loading = true;
   pane.needsRefresh = false;
   pane.error = null;
@@ -1270,6 +1310,10 @@ async function navigate(pane,requestedPath,options = {}) {
     const directory = result.value;
     if (typeof directory?.path !== 'string' || !Array.isArray(directory.entries)) throw new Error('폴더 정보를 읽지 못했어요. 다시 시도해 주세요.');
     const changedPath = !samePath(directory.path,previousPath);
+    // The old rows remain interactive while refreshing. Preserve the selection
+    // at commit time, including a selection cleared during the pending read.
+    const previousSelected = new Set(selectedFiles(pane).map((file) => pathKey(file.path)));
+    const previousAnchor = pane.entries.find((file) => file.id===pane.selectionAnchor)?.path;
     const historyOrigin = relocatedPath(options.historyOrigin ?? previousPath,pane.refreshRelocations || []);
     if (options.history==='back') {
       pane.history.pop();
@@ -1645,7 +1689,7 @@ $('#panels').addEventListener('dragover',(event) => {
   if (!hasSupportedDrop(event)) return;
   event.preventDefault();
   const target = getDropTarget(event);
-  if (!target || internalDrag?.sources.some((source) => pathWithin(target.path,source))) {
+  if (!target || (internalDrag && !internalDrag.native && internalDrag.sources.some((source) => pathWithin(target.path,source)))) {
     clearDropFeedback();event.dataTransfer.dropEffect='none';return;
   }
   event.dataTransfer.dropEffect = showDropFeedback(target,event);
@@ -1657,17 +1701,23 @@ $('#panels').addEventListener('drop',(event) => {
   if (!hasSupportedDrop(event)) return;
   event.preventDefault();event.stopPropagation();
   const target = getDropTarget(event);
+  if (!target) {event.dataTransfer.dropEffect='none';clearDropFeedback();return;}
   let sources = [];
+  const ownHtmlSelection = internalDrag && !internalDrag.native && event.dataTransfer.getData('application/x-pane-selection')===internalDrag.token;
   try {
-    if (internalDrag && !internalDrag.native && event.dataTransfer.getData('application/x-pane-selection')===internalDrag.token) sources=[...internalDrag.sources];
+    if (ownHtmlSelection) sources=[...internalDrag.sources];
     else if (typeof bridge.droppedPaths==='function' && event.dataTransfer.files.length) sources=bridge.droppedPaths(Array.from(event.dataTransfer.files));
   } catch {showToast('끌어온 파일 경로를 확인하지 못했어요.');}
   const validSources = Array.isArray(sources) ? [...new Set(sources.filter((source) => typeof source==='string' && source))] : [];
   const operation = target && validSources.length ? dropOperation(validSources,target.path,event) : null;
+  // Chromium acknowledges before transfer completes. Even matching native
+  // paths can come from Explorer while an older drag IPC is pending. Never
+  // authorize that external source to delete its originals on OLE MOVE.
+  event.dataTransfer.dropEffect = operation ? (ownHtmlSelection ? operation : 'copy') : 'none';
   clearDragState();
   if (!target) return;
   if (!validSources.length) {showToast('끌어온 파일 경로를 확인하지 못했어요. PC에 저장된 파일을 선택해 주세요.');return;}
-  if (validSources.some((source) => pathWithin(target.path,source))) {showToast('자기 자신이나 하위 폴더에는 놓을 수 없어요.');return;}
+  if (validSources.some((source) => pathWithin(target.path,source))) {event.dataTransfer.dropEffect='none';showToast('자기 자신이나 하위 폴더에는 놓을 수 없어요.');return;}
   activate(target.pane);
   performTransfer(validSources,target.path,operation);
 });
@@ -1740,7 +1790,7 @@ $('#panels').addEventListener('keydown',(event) => {
     if (!(event.ctrlKey || event.metaKey) || event.shiftKey) selectFile(pane,next.dataset.file,{toggle:event.ctrlKey || event.metaKey,range:event.shiftKey});
   }
 });
-$('#global-search').addEventListener('input',() => {if (ready) visiblePanes().forEach(renderFiles);});
+$('#global-search').addEventListener('input',() => {if (ready) renderFileLists(visiblePanes());});
 $('#refresh-button').addEventListener('click',() => navigate(activePane(),activePane().path,{refresh:true,preserveDraft:true,accurate:true}));
 $('#file-info-button').addEventListener('click',() => openInfo(selectedFile()));
 $('#add-favorite-button').addEventListener('click',addFavorite);
@@ -1878,7 +1928,7 @@ document.addEventListener('keydown',(event) => {
   if (!editing && event.altKey && event.key==='ArrowUp' && activePane().parent) {event.preventDefault();navigate(activePane(),activePane().parent,{focus:true});return;}
   if (!editing && event.altKey && ['ArrowLeft','ArrowRight'].includes(event.key)) {event.preventDefault();navigateHistory(event.key==='ArrowLeft'?'back':'forward');return;}
   if (event.key==='Escape' && openAddressPane) {event.preventDefault();closeAddressMenu(true);return;}
-  if (event.key==='Escape' && $('#global-search').value) {$('#global-search').value='';visiblePanes().forEach(renderFiles);return;}
+  if (event.key==='Escape' && $('#global-search').value) {$('#global-search').value='';renderFileLists(visiblePanes());return;}
   if (event.key==='Escape' && !editing && clipboard && !transferPending) {clipboard=null;clipboardRevision++;updateSelection();}
 });
 document.addEventListener('pointerdown',(event) => {

@@ -73,7 +73,7 @@ async function fixture(native = true) {
   return page;
 }
 async function idle(page) {
-  await page.waitForFunction(() => document.querySelectorAll('.file-panel[aria-busy="false"]').length === 8);
+  await page.waitForFunction(() => [...document.querySelectorAll('.file-panel:not([hidden])')].every(panel => panel.getAttribute('aria-busy') === 'false'));
 }
 const count = (page, type) => page.evaluate(type => window.dragFixture.calls.filter(call => call.type === type).length, type);
 async function start(page, index = 0, key = 'latest') {
@@ -183,19 +183,33 @@ async function scenario(name, run, native = true) {
       }
     }
   });
-  await scenario('Late success acknowledgement cannot erase a newer recovery failure from the original drag', async page => {
+  await scenario('Late success acknowledgement clears the covered original failure without covering a new request', async page => {
     await start(page);
     await page.locator('#shell-recovery-button').click();
     await settle(page, 'drag', failure('SHELL_DISCONNECTED'));
     assert.equal(await page.locator('#shell-recovery-button').isDisabled(), true);
     await settle(page, 'cancel');
-    assert.equal(await page.locator('#shell-recovery-button').isEnabled(), true);
-    assert.equal(await page.locator('#shell-recovery-button').textContent(), 'Windows 작업 복구');
+    assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
+    assert.match(await page.locator('#toast').textContent(), /SHELL_DISCONNECTED/, 'Recovery does not erase the uncertain outcome warning');
+    assert.equal(await count(page, 'cancel'), 1);
+    await start(page);
+    await settle(page, 'drag', failure('SHELL_DISCONNECTED'));
+    assert.equal(await page.locator('#shell-recovery-button').isEnabled(), true, 'A newer request is outside the acknowledged recovery');
     await escape(page);
     await settle(page, 'cancel');
     assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
-    assert.equal(await count(page, 'drag'), 1);
+    assert.equal(await count(page, 'drag'), 2);
     assert.equal(await count(page, 'cancel'), 2);
+  });
+  await scenario('Early success acknowledgement cannot let the covered late error erase a later recovery failure', async page => {
+    await start(page); await escape(page); await settle(page, 'cancel');
+    await escape(page); await settle(page, 'cancel', failure('SHELL_RECOVERY_FAILED'));
+    await settle(page, 'drag', failure('SHELL_DISCONNECTED'));
+    assert.equal(await page.locator('#shell-recovery-button').isEnabled(), true);
+    await escape(page); await settle(page, 'cancel');
+    assert.equal(await page.locator('#shell-recovery-button').isHidden(), true);
+    assert.equal(await count(page, 'drag'), 1);
+    assert.equal(await count(page, 'cancel'), 3);
   });
   await scenario('Helper exit/busy/cancel/error/rejection release the reservation and permit one manual retry', async page => {
     let attempts = 0;
@@ -274,7 +288,7 @@ async function scenario(name, run, native = true) {
   });
   await scenario('In-app drop completes once while native IPC is pending; dragend and duplicate gestures do not cancel it', async page => {
     await start(page);
-    assert.match(await drop(page), /이동/);
+    assert.match(await drop(page), /복사/);
     assert.equal(await count(page, 'transfer'), 1);
     assert.equal(await page.locator('#shell-recovery-button').isVisible(), true);
     assert.equal(await page.locator('#shell-recovery-button').isDisabled(), true);
@@ -299,7 +313,7 @@ async function scenario(name, run, native = true) {
       window.dispatchEvent(new Event('blur')); window.dispatchEvent(new Event('focus'));
     });
     const feedback = await drop(page);
-    assert.match(feedback, /이동/, 'Focus refresh must not turn the live in-app drop target into a busy pane');
+    assert.match(feedback, /복사/, 'Focus refresh keeps the target available with conservative native drag feedback');
     assert.equal(await count(page, 'list'), lists);
     assert.equal(await count(page, 'clipboard'), clipboard);
     assert.equal(await count(page, 'transfer'), 1);

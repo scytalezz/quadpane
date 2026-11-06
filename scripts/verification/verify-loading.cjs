@@ -163,7 +163,8 @@ async function capture(name) {
   }, { project, packaged, session, root });
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await page.reload();
-  const initial = await waitRequests(8);
+  const initial = await waitRequests(session.workspaces[session.workspaceId].layout);
+  assert.equal(initial.length, 4, 'Startup reads only the four visible panes');
   for (const record of initial) assert.deepEqual(record.options, { accurate: false });
   await loading(0, false);
   assert.match(await panel().locator('.empty-state').innerText(), /폴더를 불러오고 있어요/);
@@ -239,11 +240,11 @@ async function capture(name) {
     await panel().locator('[data-action="newfolder"]').click();
     await page.locator('#name-input').fill('created-during-check');
     await page.locator('#name-confirm').click();
-  }, { count: 2 });
+  }, { count: 1 });
   assert.ok(fs.existsSync(path.join(folders[0], 'created-during-check')));
   await release(sent); await allSettled();
   await page.waitForFunction(() => document.querySelector('#activity-strip').getAttribute('aria-busy') === 'false');
-  sent = await begin(() => page.evaluate(() => window.dispatchEvent(new Event('focus'))), { count: 8 });
+  sent = await begin(() => page.evaluate(() => window.dispatchEvent(new Event('focus'))), { count: 4 });
   await release(sent); await allSettled();
   checks.push('Actual folder mutation refreshes affected panes with accurate:false; automatic focus refresh does the same for all loaded panes');
 

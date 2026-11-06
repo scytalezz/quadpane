@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { randomUUID } = require('node:crypto');
 const { normalizePath } = require('./filesystem.cjs');
 const MAX_SESSION_BYTES = 2 * 1024 * 1024;
 
@@ -38,7 +39,6 @@ function validateSession(input) {
 
 function createSessionStore(directory) {
   const filename = path.join(directory, 'session.json');
-  const temporary = path.join(directory, `.session-${process.pid}.tmp`);
   return {
     load() {
       try {
@@ -54,10 +54,13 @@ function createSessionStore(directory) {
       const serialized = `${JSON.stringify(session, null, 2)}\n`;
       // Apply the same byte ceiling before touching the previous valid file.
       if (Buffer.byteLength(serialized, 'utf8') > MAX_SESSION_BYTES) throw invalidSession();
+      const temporary = path.join(directory, `.session-${randomUUID()}.tmp`);
       let descriptor;
+      let owned = false;
       try {
         fs.mkdirSync(directory, { recursive: true });
-        descriptor = fs.openSync(temporary, 'w', 0o600);
+        descriptor = fs.openSync(temporary, 'wx', 0o600);
+        owned = true;
         fs.writeFileSync(descriptor, serialized, 'utf8');
         fs.fsyncSync(descriptor);
         fs.closeSync(descriptor);
@@ -65,7 +68,7 @@ function createSessionStore(directory) {
         fs.renameSync(temporary, filename);
       } catch {
         if (descriptor !== undefined) { try { fs.closeSync(descriptor); } catch {} }
-        try { fs.unlinkSync(temporary); } catch {}
+        if (owned) { try { fs.unlinkSync(temporary); } catch {} }
         const error = new Error('Could not save session');
         error.code = 'SESSION_WRITE_FAILED';
         throw error;

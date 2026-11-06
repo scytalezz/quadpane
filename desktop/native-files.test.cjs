@@ -535,6 +535,34 @@ test('session persists both workspaces and unavailable paths across store recrea
   assert.deepEqual(await fs.readdir(directory), ['session.json']);
 });
 
+test('session saves preserve a preexisting hard link at the legacy temporary path', async t => {
+  const directory = await fixture(t);
+  const unrelated = path.join(directory, 'unrelated.txt');
+  const legacyTemporary = path.join(directory, `.session-${process.pid}.tmp`);
+  await fs.writeFile(unrelated, 'keep unrelated bytes');
+  await fs.link(unrelated, legacyTemporary);
+  const session = sessionWith('C:\\session-fixture');
+  const store = createSessionStore(directory);
+  store.save(session);
+  assert.equal(await fs.readFile(unrelated, 'utf8'), 'keep unrelated bytes');
+  assert.equal(await fs.readFile(legacyTemporary, 'utf8'), 'keep unrelated bytes');
+  assert.deepEqual(store.load(), { session });
+});
+
+test('session temporary collisions neither truncate nor delete existing files', async t => {
+  const directory = await fixture(t);
+  const temporary = path.join(directory, '.session-collision.tmp');
+  await fs.writeFile(temporary, 'existing temporary owner');
+  const module = { exports: {} };
+  require('node:vm').runInNewContext(await fs.readFile(path.join(__dirname, 'session-store.cjs'), 'utf8'), {
+    module, process, Buffer,
+    require: name => name === 'node:crypto' ? { randomUUID: () => 'collision' } : require(name),
+  });
+  const store = module.exports.createSessionStore(directory);
+  assert.throws(() => store.save(sessionWith('C:\\session-fixture')), { code: 'SESSION_WRITE_FAILED' });
+  assert.equal(await fs.readFile(temporary, 'utf8'), 'existing temporary owner');
+});
+
 test('long valid Unicode paths larger than 512 KiB persist and reload unchanged', async t => {
   const directory = await fixture(t);
   const longRoot = `C:\\${Array.from({ length: 135 }, () => '한'.repeat(239)).join('\\')}`;
@@ -614,7 +642,13 @@ test('invalid or unwritable saves retain the previous valid session', async t =>
   oversizedPath.workspaces.design.panes[0].path = `C:\\${'한'.repeat(32768)}`;
   assert.throws(() => store.save(oversizedPath), { code: 'INVALID_SESSION' });
   assert.deepEqual(store.load(), { session: original });
-  await fs.mkdir(path.join(directory, `.session-${process.pid}.tmp`));
-  assert.throws(() => store.save(original), { code: 'SESSION_WRITE_FAILED' });
+  const module = { exports: {} };
+  require('node:vm').runInNewContext(await fs.readFile(path.join(__dirname, 'session-store.cjs'), 'utf8'), {
+    module, process, Buffer,
+    require: name => name === 'node:fs' ? { ...require(name), openSync() {
+      throw Object.assign(new Error('fixture write denied'), { code: 'EACCES' });
+    } } : require(name),
+  });
+  assert.throws(() => module.exports.createSessionStore(directory).save(original), { code: 'SESSION_WRITE_FAILED' });
   assert.deepEqual(store.load(), { session: original });
 });

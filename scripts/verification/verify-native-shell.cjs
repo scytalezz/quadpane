@@ -16,7 +16,7 @@ const source = path.join(root, '원본'), target = path.join(root, '대상');
 const profile = path.join(root, 'profile');
 const settings = path.join(profile, fromSource ? '.quadpane-dev-data' : 'quadpane-data');
 for (const dir of [source, target, path.join(target, 'folder'), settings]) fs.mkdirSync(dir, { recursive: true });
-for (const name of ['alpha.txt', 'beta.txt', 'move.txt', 'copy.txt', 'shift.txt']) fs.writeFileSync(path.join(source, name), name);
+for (const name of ['alpha.txt', 'beta.txt', 'move.txt', 'copy.txt', 'shift.txt', 'external-late.txt']) fs.writeFileSync(path.join(source, name), name);
 const state = location => ({ path: location, sort: 'name', direction: 1 });
 fs.writeFileSync(path.join(settings, 'session.json'), JSON.stringify({ version: 1, workspaceId: 'design', workspaces: {
   design: { layout: 4, active: 0, panes: [source, target, source, target].map(state) },
@@ -74,16 +74,19 @@ async function drop(name, modifiers = {}, native = true) {
     await page.waitForTimeout(100);
     assert.ok((await calls()).some(call => call.type === 'drag' && call.paths.includes(path.join(source, name))));
   }
-  const effect = await page.evaluate(modifiers => {
+  const result = await page.evaluate(modifiers => {
     const dataTransfer = new DataTransfer();
+    // Observe renderer assignment independently of synthetic OLE negotiation.
+    Object.defineProperty(dataTransfer, 'dropEffect', { value: 'none', writable: true });
     dataTransfer.items.add(document.querySelector('#fixture-input').files[0]);
     dataTransfer.effectAllowed = 'copyMove';
     const destination = document.querySelector('#panel-design-1 .file-scroll');
     destination.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer, ...modifiers }));
     const feedback = document.querySelector('#drag-feedback').textContent;
     destination.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer, ...modifiers }));
-    return feedback;
+    return { feedback, effect: dataTransfer.dropEffect };
   }, modifiers);
+  assert.equal(result.effect, 'copy', 'Native Files never authorize source deletion, including matching pending native paths');
   // In-app transfer must finish while native drag IPC remains unresolved: OLE's
   // nested drop loop can be waiting for this very transfer to acknowledge it.
   await row(name, 1).waitFor(); await idle();
@@ -92,7 +95,7 @@ async function drop(name, modifiers = {}, native = true) {
     await assertShellSuppressed('Dropping clears source visuals, not the native IPC reservation');
     await settle('drag', { ok: true, value: { action: 'drop' } });
   }
-  return effect;
+  return result.feedback;
 }
 (async () => {
   application = await _electron.launch({ executablePath: executable,
@@ -188,13 +191,23 @@ async function drop(name, modifiers = {}, native = true) {
   await page.keyboard.press('Control+v'); await row('beta.txt', 1).waitFor(); await idle();
   checks.push('Keyboard copy/paste uses shared clipboard bridge and real transfer service (OS clipboard intercepted)');
   await page.evaluate(() => { const input = document.createElement('input'); input.type = 'file'; input.id = 'fixture-input'; input.hidden = true; document.body.append(input); });
-  assert.match(await drop('move.txt'), /이동/u);
+  // Native paths select internal operation policy but cannot authenticate OLE
+  // origin. Both protected feedback and the final Files effect remain COPY.
+  assert.match(await drop('move.txt'), /복사/u);
   assert.equal(fs.existsSync(path.join(source, 'move.txt')), false);
   assert.match(await drop('copy.txt', { ctrlKey: true }), /복사/u);
   assert.equal(fs.existsSync(path.join(source, 'copy.txt')), true);
   assert.match(await drop('shift.txt', { shiftKey: true }, false), /복사/u);
   assert.equal(fs.existsSync(path.join(source, 'shift.txt')), true);
-  checks.push('Default drag dispatch without Alt; disk-backed File drops perform internal move, Ctrl copy and external copy even with Shift; feedback matches operation');
+  checks.push('Default drag dispatch without Alt; conservative native feedback precedes verified internal move, Ctrl copy and external copy even with Shift');
+  await row('copy.txt').click(); await startDrag('copy.txt');
+  await page.evaluate(() => document.dispatchEvent(new Event('dragend')));
+  assert.match(await drop('external-late.txt', { shiftKey: true }, false), /복사/u);
+  assert.equal(fs.existsSync(path.join(source, 'external-late.txt')), true, 'A pending different native selection cannot turn external copy into move');
+  assert.equal(fs.readFileSync(path.join(target, 'external-late.txt'), 'utf8'), 'external-late.txt');
+  assert.equal(await application.evaluate(() => global.pendingNative.drag.length), 1);
+  await settle('drag', { ok: true, value: { action: 'cancel' } });
+  checks.push('External drop after stale dragend copies once while an older different native request remains pending');
   assert.deepEqual(errors, []);
   const resources = path.join(path.dirname(executable), 'resources');
   const hash = filename => createHash('sha256').update(fs.readFileSync(filename)).digest('hex');

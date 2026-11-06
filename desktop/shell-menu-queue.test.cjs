@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const { PassThrough } = require('node:stream');
-const { createShellMenuService } = require('./shell-menu.cjs');
+const { createShellMenuService, defaultTimeouts } = require('./shell-menu.cjs');
 
 function fixture(t, options = {}) {
   const workers = [], sent = [];
@@ -399,6 +399,15 @@ for (const event of ['end', 'close']) test(`stdout ${event} without process exit
   worker.stdout.write(JSON.stringify({ id: f.sent[0].id, phase: 'interactive' }) + '\n');
   if (event === 'end') worker.stdout.end();
   else worker.stdout.destroy();
+  await new Promise(resolve => setImmediate(resolve));
+  if (event === 'end') {
+    timers.advance(defaultTimeouts.eofExitMs - 1);
+    assert.equal(f.service.pending, true, 'clean EOF retains the request until the bounded grace expires');
+    assert.equal(worker.killed, undefined);
+    assert.equal(worker.stdin.writableEnded, false);
+    timers.advance(1);
+  }
+  assert.equal(f.service.pending, false, 'abrupt close needs no grace; clean EOF settles at its deadline');
   await bounded(rejected);
   assert.equal(f.service.pending, false);
   const blocked = assert.rejects(f.show('readClipboard'), { code: 'SHELL_RECOVERY_FAILED' });
@@ -420,6 +429,16 @@ for (const event of ['end', 'close']) test(`stdout ${event} during commit report
   worker.stdout.write(JSON.stringify({ id: f.sent[0].id, phase: 'committing' }) + '\n');
   if (event === 'end') worker.stdout.end();
   else worker.stdout.destroy();
+  await new Promise(resolve => setImmediate(resolve));
+  if (event === 'end') {
+    timers.advance(defaultTimeouts.eofExitMs - 1);
+    assert.equal(f.service.pending, true, 'clean EOF retains the committing request during grace');
+    assert.equal(worker.killed, undefined);
+    assert.equal(worker.stdin.writableEnded, false);
+    assert.equal(worker.stdin.destroyed, false);
+    timers.advance(1);
+  }
+  assert.equal(f.service.pending, false, 'abrupt close needs no grace; clean EOF settles at its deadline');
   await bounded(rejected);
   assert.equal(f.service.pending, false);
   await assert.rejects(f.show('readClipboard'), { code: 'SHELL_RECOVERY_FAILED' });

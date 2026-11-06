@@ -125,17 +125,30 @@ function runMoveProcess(source, destination, mode, executable, args, launch = sp
     let output = '';
     let stderr = '';
     let started = false;
+    let transportError;
     child.once('spawn', () => { started = true; });
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => { output += chunk; });
     child.stderr.setEncoding('utf8');
     child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(0, 8192); });
-    child.on('error', error => reject(Object.assign(failure('TRANSFER_FAILED'), {
-      causeCode: error.code, nativeError: error.message,
-      ...(!started ? { launchError: error.code } : {}),
-    })));
-    child.stdin.on('error', () => {});
+    child.on('error', error => {
+      // After spawn, an error does not prove the mover has exited. Retain the
+      // reservation until close just as for pipe errors; never replay the move.
+      if (started) { transportError ||= error; return; }
+      reject(Object.assign(failure('TRANSFER_FAILED'), {
+        causeCode: error.code, nativeError: error.message, launchError: error.code,
+      }));
+    });
+    // A pipe error is not a terminal result from the mover. Keep the operation
+    // reserved until close; neither kill nor replay a potentially committed move.
+    for (const stream of [child.stdin, child.stdout, child.stderr]) {
+      stream.on('error', error => { transportError ||= error; });
+    }
     child.on('close', (code, signal) => {
+      if (transportError) return reject(Object.assign(failure('TRANSFER_FAILED'), {
+        causeCode: transportError.code, nativeError: transportError.message,
+        errno: transportError.errno, syscall: transportError.syscall, exitCode: code, signal,
+      }));
       let result;
       try { result = JSON.parse(output.replace(/^\uFEFF/u, '')); } catch { /* Uncertain outcome; never repeat the move. */ }
       if (code === 0 && !signal && result?.ok === true) return resolve();
@@ -273,9 +286,11 @@ function createTransferService(options = {}) {
         const canonicalSource = await fs.realpath(source);
         const canonicalTarget = path.win32.join(canonicalDestination, path.win32.basename(source));
         if (key(canonicalSource) === key(canonicalTarget)) throw failure('SAME_LOCATION');
+        // A known conflict cannot be transferred. Avoid walking a potentially
+        // large/network source tree; publication still refuses late conflicts.
+        if (await exists(target)) throw failure('EEXIST');
         const records = await inspectTree(source);
         if (records[0].stat.isDirectory() && within(canonicalDestination, canonicalSource)) throw failure('DESCENDANT_TARGET');
-        if (await exists(target)) throw failure('EEXIST');
         if (request.operation === 'copy') {
           await stagedCopy(records, source, destination, target, move, copy);
         } else {
